@@ -170,11 +170,14 @@ async fn update(bot: AutoSend<Bot>) -> Result<(), teloxide::RequestError> {
                     let message = format!(
                         "
 {}/{}
+
 comment:
 {}
+
 now presents in:
 {}
-all branches containing this commit:
+
+all branches:
 {}
 ",
                         repo,
@@ -221,6 +224,8 @@ async fn list(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<(), teloxide::
         for (commit, comment) in commits {
             result.push_str(&format!("- {}\n   {}\n", commit, comment));
         }
+
+        result.push('\n');
     }
     cx.reply_to(result).await?;
 
@@ -372,8 +377,10 @@ async fn check(
     let reply = format!(
         "
 {}/{}
-all branches containing this commit:
+
+branches:
 {}
+
 new branches:
 {}",
         name,
