@@ -1,0 +1,23 @@
+[package]
+name = "commit-notifier"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+teloxide = { version = "*", features = [ "full" ] }
+git2 = "*"
+tokio = { version = "*", features = [ "macros", "rt-multi-thread" ] }
+futures = "*"
+rusqlite = "*"
+log = "*"
+pretty_env_logger = "*"
+thiserror = "*"
+derive_more = "*"
+structopt = "*"
+regex = "*"
+serde_json = "*"
+serde = "*"
+cron = "*"
+chrono = "*"
