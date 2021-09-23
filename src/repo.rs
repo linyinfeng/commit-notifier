@@ -428,7 +428,7 @@ pub fn lock_task(task: Task) -> Option<TaskGuard> {
     if running.contains(&task) {
         None
     } else {
-        log::info!("task locked: {:?}", task);
+        log::debug!("task locked: {:?}", task);
         running.insert(task.clone());
         Some(TaskGuard { task })
     }
@@ -439,7 +439,7 @@ impl Drop for TaskGuard {
         let mut running = TASKS.lock().unwrap();
         let removed = running.remove(&self.task);
         assert!(removed);
-        log::info!("task unlocked: {:?}", self.task);
+        log::debug!("task unlocked: {:?}", self.task);
     }
 }
 
