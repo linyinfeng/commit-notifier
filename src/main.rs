@@ -219,7 +219,7 @@ async fn list(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<(), teloxide::
             result.push_str("(nothing)\n");
         }
         for (commit, comment) in commits {
-            result.push_str(&format!("- {}\n   {}", commit, comment));
+            result.push_str(&format!("- {}\n   {}\n", commit, comment));
         }
     }
     cx.reply_to(result).await?;
@@ -241,7 +241,7 @@ async fn repo_add(
         }
     };
 
-    if !exists {
+    if exists {
         cx.reply_to(format!("repository '{}' already exists", name))
             .await?;
         return Ok(());
@@ -313,8 +313,6 @@ async fn commit_add(
         Some(l) => l,
         None => return Ok(()),
     };
-
-    cx.reply_to(format!("add commit {}", hash)).await?;
 
     if let Err(e) = repo::commit_add(&lock, &hash, comment).await {
         e.report(&cx).await?;

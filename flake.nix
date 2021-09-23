@@ -56,5 +56,9 @@
 
           checks = packages;
         };
+
+      overlay = final: prev: {
+        commit-notifier = self.defaultPackage.${final.system};
+      };
     };
 }
