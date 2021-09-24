@@ -92,7 +92,7 @@ async fn run() {
 async fn schedule(bot: AutoSend<Bot>) {
     let expression = &options::get().cron;
     let schedule = Schedule::from_str(expression).expect("cron expression");
-    for datetime in schedule.upcoming(Utc).take(10) {
+    for datetime in schedule.upcoming(Utc) {
         let now = Utc::now();
         let dur = match (datetime - now).to_std() {
             // duration is less than zero
