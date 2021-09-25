@@ -12,6 +12,8 @@
     utils.mkFlake {
       inherit self inputs;
 
+      channels.nixpkgs.input = nixpkgs;
+
       outputsBuilder = channels:
         let
           pkgs = channels.nixpkgs;
