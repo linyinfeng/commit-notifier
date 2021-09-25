@@ -4,19 +4,13 @@
     flake-utils-plus.url = "github:gytis-ivaskevicius/flake-utils-plus";
   };
   outputs =
-    inputs@{ self, nixpkgs, flake-utils-plus, naersk, rust-overlay }:
+    inputs@{ self, nixpkgs, flake-utils-plus }:
     let
       name = "commit-notifier";
       utils = flake-utils-plus.lib;
     in
     utils.mkFlake {
       inherit self inputs;
-
-      channels.nixpkgs = {
-        overlaysBuilder = _channels: [
-          rust-overlay.overlay
-        ];
-      };
 
       outputsBuilder = channels:
         let
