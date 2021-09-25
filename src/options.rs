@@ -1,4 +1,3 @@
-use std::lazy::SyncOnceCell;
 use std::path::PathBuf;
 use structopt::StructOpt;
 
@@ -10,10 +9,10 @@ pub struct Options {
     pub cron: String,
 }
 
-pub static OPTIONS: SyncOnceCell<Options> = SyncOnceCell::new();
+pub static OPTIONS: once_cell::sync::OnceCell<Options> = once_cell::sync::OnceCell::new();
 
 pub fn initialize() {
-    SyncOnceCell::set(&OPTIONS, Options::from_args()).unwrap();
+    once_cell::sync::OnceCell::set(&OPTIONS, Options::from_args()).unwrap();
 }
 
 pub fn get() -> &'static Options {

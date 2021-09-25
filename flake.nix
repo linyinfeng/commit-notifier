@@ -2,8 +2,6 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-utils-plus.url = "github:gytis-ivaskevicius/flake-utils-plus";
-    naersk.url = "github:nmattia/naersk";
-    rust-overlay.url = "github:oxalica/rust-overlay";
   };
   outputs =
     inputs@{ self, nixpkgs, flake-utils-plus, naersk, rust-overlay }:
@@ -23,34 +21,21 @@
       outputsBuilder = channels:
         let
           pkgs = channels.nixpkgs;
-          rust = pkgs.rust-bin.nightly.latest.default.override {
-            extensions = [ "rust-src" "rust-analyzer-preview" ];
-          };
-          naersk-lib = naersk.lib.${pkgs.system}.override {
-            cargo = rust;
-            rustc = rust;
-          };
         in
         rec {
-          packages.${name} = naersk-lib.buildPackage {
-            pname = name;
-            root = ./.;
-
-            buildInputs = with pkgs; [
-              openssl
-              sqlite
-              libgit2
-            ];
-            nativeBuildInputs = with pkgs; [ pkg-config ];
-          };
+          packages.${name} = pkgs.callPackage ./commit-notifier.nix { };
           defaultPackage = packages.${name};
           apps.${name} = utils.lib.mkApp { drv = packages.${name}; };
           defaultApp = apps.${name};
 
           devShell = pkgs.mkShell {
-            inputsFrom = [ packages.${name} ];
             packages = with pkgs; [
               fup-repl
+              rustup
+              pkg-config
+              sqlite
+              libgit2
+              openssl
             ];
           };
 

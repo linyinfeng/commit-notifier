@@ -7,7 +7,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter};
-use std::lazy::SyncLazy;
 use std::path::Path;
 use std::sync::Mutex;
 use std::{
@@ -20,8 +19,9 @@ use tokio::task;
 use crate::cache;
 use crate::error::Error;
 
-static NAME_RE: SyncLazy<Regex> = SyncLazy::new(|| Regex::new("^[a-zA-Z0-9_\\-]*$").unwrap());
-static TASKS: SyncLazy<Mutex<BTreeSet<Task>>> = SyncLazy::new(|| Mutex::new(BTreeSet::new()));
+static NAME_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| Regex::new("^[a-zA-Z0-9_\\-]*$").unwrap());
+static ORIGIN_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| Regex::new("^origin/(.*)$").unwrap());
+static TASKS: once_cell::sync::Lazy<Mutex<BTreeSet<Task>>> = once_cell::sync::Lazy::new(|| Mutex::new(BTreeSet::new()));
 
 pub struct Paths {
     pub outer: PathBuf,
@@ -40,9 +40,14 @@ pub struct TaskGuard {
     pub task: Task,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommitInfo {
+    pub comment: String,
+}
+
 #[derive(Debug)]
 pub struct CheckResult {
-    pub branches: BTreeSet<String>,
+    pub all: BTreeSet<String>,
     pub new: BTreeSet<String>,
 }
 
@@ -51,9 +56,9 @@ pub struct Results {
     data: BTreeMap<String, CommitResults>,
 }
 
-#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitResults {
-    comment: String,
+    info: CommitInfo,
     branches: BTreeSet<String>,
 }
 
@@ -126,10 +131,10 @@ pub fn get_repos(chat: i64) -> Result<BTreeSet<String>, Error> {
     Ok(repos)
 }
 
-pub fn get_commits(chat: i64, name: &str) -> Result<BTreeMap<String, String>, Error> {
+pub fn get_commits(chat: i64, name: &str) -> Result<BTreeMap<String, CommitInfo>, Error> {
     let paths = get_paths(chat, name)?;
     let res = read_results(paths.results)?;
-    Ok(res.data.into_iter().map(|(k, v)| (k, v.comment)).collect())
+    Ok(res.data.into_iter().map(|(k, v)| (k, v.info)).collect())
 }
 
 pub async fn create(lock: &TaskGuard, url: &str) -> Result<Output, Error> {
@@ -233,9 +238,8 @@ pub async fn check(lock: &TaskGuard, target_commit: &str) -> Result<CheckResult,
             let branches = repo.branches(Some(git2::BranchType::Remote))?;
             for branch_iter_res in branches {
                 let (branch, _) = branch_iter_res?;
-                let branch_name = match branch.name()? {
+                let branch_name = match branch.name()?.and_then(branch_name_map_filter) {
                     None => continue,
-                    Some("origin/HEAD") => continue,
                     Some(n) => n,
                 };
                 let root = branch.get().peel_to_commit()?;
@@ -248,16 +252,22 @@ pub async fn check(lock: &TaskGuard, target_commit: &str) -> Result<CheckResult,
                 }
             }
 
-            let branches_hit_diff = branches_hit.difference(&branches_hit_old).cloned().collect();
+            let branches_hit_diff = branches_hit
+                .difference(&branches_hit_old)
+                .cloned()
+                .collect();
 
-            results.data.insert(target_commit, CommitResults {
-                comment: old_commit_results.comment,
-                branches: branches_hit.clone()
-            });
+            results.data.insert(
+                target_commit,
+                CommitResults {
+                    info: old_commit_results.info,
+                    branches: branches_hit.clone(),
+                },
+            );
             write_results(&paths.results, &results)?;
 
             Ok(CheckResult {
-                branches: branches_hit,
+                all: branches_hit,
                 new: branches_hit_diff,
             })
         })
@@ -265,6 +275,19 @@ pub async fn check(lock: &TaskGuard, target_commit: &str) -> Result<CheckResult,
     };
 
     Ok(result)
+}
+
+fn branch_name_map_filter(name: &str) -> Option<&str> {
+    if name == "origin/HEAD" {
+        return None;
+    }
+
+    let captures = match ORIGIN_RE.captures(name) {
+        Some(cap) => cap,
+        None => return Some(name),
+    };
+
+    Some(captures.get(1).unwrap().as_str())
 }
 
 fn update_from_root<'repo>(
@@ -382,7 +405,7 @@ fn update_from_root<'repo>(
     Ok(())
 }
 
-pub async fn commit_add(lock: &TaskGuard, commit: &str, comment: String) -> Result<(), Error> {
+pub async fn commit_add(lock: &TaskGuard, commit: &str, info: CommitInfo) -> Result<(), Error> {
     let Task { chat, ref name } = lock.task;
     let paths = get_paths(chat, name)?;
     if !paths.repo.is_dir() {
@@ -392,12 +415,25 @@ pub async fn commit_add(lock: &TaskGuard, commit: &str, comment: String) -> Resu
     if results.data.contains_key(commit) {
         return Err(Error::CommitExists(commit.to_owned()));
     }
-    results.data.insert(commit.to_owned(), CommitResults {
-        comment,
-        branches: BTreeSet::new()
-    });
+    results.data.insert(
+        commit.to_owned(),
+        CommitResults {
+            info,
+            branches: BTreeSet::new(),
+        },
+    );
     write_results(paths.results, &results)?;
     Ok(())
+}
+
+pub async fn commit_info(lock: &TaskGuard, commit: &str) -> Result<CommitInfo, Error> {
+    let Task { chat, ref name } = lock.task;
+    let paths = get_paths(chat, name)?;
+    let mut results = read_results(&paths.results)?;
+    match results.data.remove(commit) {
+        Some(r) => Ok(r.info),
+        None => Err(Error::UnknownCommit(commit.to_owned())),
+    }
 }
 
 pub async fn commit_remove(lock: &TaskGuard, commit: &str) -> Result<(), Error> {

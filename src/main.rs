@@ -1,13 +1,9 @@
-#![feature(once_cell)]
-
 mod cache;
 mod error;
 mod options;
 mod repo;
 
-use std::collections::BTreeSet;
 use std::fmt;
-use std::lazy::SyncLazy;
 use std::str::FromStr;
 
 use chrono::Utc;
@@ -16,11 +12,11 @@ use regex::Regex;
 use repo::TaskGuard;
 use teloxide::prelude::*;
 use teloxide::types::Me;
+use teloxide::types::ParseMode;
 use teloxide::utils::command::BotCommand;
+use teloxide::utils::markdown;
 use teloxide::utils::command::ParseError;
 use tokio::time::sleep;
-
-use crate::repo::CheckResult;
 
 #[derive(BotCommand)]
 #[command(rename = "lowercase", description = "Supported commands:")]
@@ -157,7 +153,7 @@ async fn update(bot: AutoSend<Bot>) -> Result<(), teloxide::RequestError> {
                 Ok(cs) => cs,
             };
 
-            for (commit, comment) in commits {
+            for (commit, info) in commits {
                 let result = match repo::check(&lock, &commit).await {
                     Err(e) => {
                         log::warn!("failed to check ({}, {}, {}): {}", chat, repo, commit, e);
@@ -167,26 +163,10 @@ async fn update(bot: AutoSend<Bot>) -> Result<(), teloxide::RequestError> {
                 };
                 log::info!("check ({}, {}, {}) finished", chat, repo, commit);
                 if !result.new.is_empty() {
-                    let message = format!(
-                        "
-{}/{}
-
-comment:
-{}
-
-now presents in:
-{}
-
-all branches:
-{}
-",
-                        repo,
-                        commit,
-                        comment,
-                        format_set(&result.new),
-                        format_set(&result.branches)
-                    );
-                    bot.send_message(chat, message).await?;
+                    let message = check_message(&repo, &commit, &info, &result);
+                    bot.send_message(chat, message)
+                        .parse_mode(ParseMode::MarkdownV2)
+                        .await?;
                 }
             }
         }
@@ -221,8 +201,8 @@ async fn list(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<(), teloxide::
         if commits.is_empty() {
             result.push_str("(nothing)\n");
         }
-        for (commit, comment) in commits {
-            result.push_str(&format!("- {}\n   {}\n", commit, comment));
+        for (commit, info) in commits {
+            result.push_str(&format!("- {}\n   {}\n", commit, info.comment));
         }
 
         result.push('\n');
@@ -319,7 +299,9 @@ async fn commit_add(
         None => return Ok(()),
     };
 
-    if let Err(e) = repo::commit_add(&lock, &hash, comment).await {
+    let info = repo::CommitInfo { comment };
+
+    if let Err(e) = repo::commit_add(&lock, &hash, info).await {
         e.report(&cx).await?;
         return Ok(());
     }
@@ -366,7 +348,15 @@ async fn check(
         return Ok(());
     };
 
-    let CheckResult { branches, new } = match repo::check(&lock, &hash).await {
+    let info = match repo::commit_info(&lock, &hash).await {
+        Ok(i) => i,
+        Err(e) => {
+            e.report(&cx).await?;
+            return Ok(());
+        }
+    };
+
+    let result = match repo::check(&lock, &hash).await {
         Ok(rs) => rs,
         Err(e) => {
             e.report(&cx).await?;
@@ -374,21 +364,8 @@ async fn check(
         }
     };
 
-    let reply = format!(
-        "
-{}/{}
-
-branches:
-{}
-
-new branches:
-{}",
-        name,
-        hash,
-        format_set(&branches),
-        format_set(&new)
-    );
-    cx.reply_to(reply).await?;
+    let reply = check_message(&name, &hash, &info, &result);
+    cx.reply_to(reply).parse_mode(ParseMode::MarkdownV2).await?;
 
     Ok(())
 }
@@ -412,21 +389,47 @@ async fn prepare_lock(
     }
 }
 
-fn format_set<T: fmt::Display>(s: &BTreeSet<T>) -> String {
-    let res: String = s
-        .iter()
-        .map(|t| format!("- {}", t))
-        .intersperse("\n".to_owned())
+fn check_message(repo: &str, commit: &str, info: &repo::CommitInfo, result: &repo::CheckResult) -> String {
+    format!(
+        "
+{repo}/`{commit}`
+
+*comment*:
+{comment}
+
+*new* branches containing this commit:
+{new}
+
+*all* branches containing this commit:
+{all}
+",
+        repo = markdown::escape(repo),
+        commit = markdown::escape(commit),
+        comment = markdown::escape(&info.comment),
+        new = markdown_list(result.new.iter()),
+        all = markdown_list(result.all.iter())
+    )
+}
+
+fn markdown_list<Iter, T>(s: Iter) -> String
+where
+    Iter: Iterator<Item = T>,
+    T: fmt::Display,
+{
+    let mut res: String = s
+        .map(|t| format!("{}", t))
+        .map(|t| format!("\\- {}\n", markdown::escape(&t)))
         .collect();
     if res.is_empty() {
-        "(nothing)".to_owned()
+        "\u{2205}".to_owned() // the empty set symbol
     } else {
+        assert_eq!(res.pop(), Some('\n'));
         res
     }
 }
 
-static COMMIT_ADD_RE: SyncLazy<Regex> =
-    SyncLazy::new(|| Regex::new("([a-zA-Z0-9_\\-]*) ([a-z0-9]*) (.*)").unwrap());
+static COMMIT_ADD_RE: once_cell::sync::Lazy<Regex> =
+once_cell::sync::Lazy::new(|| Regex::new("([a-zA-Z0-9_\\-]*) ([a-z0-9]*) (.*)").unwrap());
 
 fn parse_commit_add(input: String) -> Result<(String, String, String), ParseError> {
     log::info!("parse raw input: {}", input);
@@ -434,17 +437,17 @@ fn parse_commit_add(input: String) -> Result<(String, String, String), ParseErro
         error::Error::WrongCommandInput(input.clone()).into(),
     ));
     let mut lines: Vec<_> = input.lines().collect();
-    if lines.is_empty() { return error; }
+    if lines.is_empty() {
+        return error;
+    }
     let captures = match COMMIT_ADD_RE.captures(lines[0]) {
         Some(cap) => cap,
-        None => {
-            return error
-        }
+        None => return error,
     };
 
     let get = |n| captures.get(n).unwrap().as_str();
     lines[0] = get(3);
-    let comment = lines.into_iter().intersperse("\n").collect();
+    let comment = lines.into_iter().map(|l| format!("{}\n", l)).collect();
     let result = (get(1).to_owned(), get(2).to_owned(), comment);
 
     log::info!("parse success: {:?}", result);

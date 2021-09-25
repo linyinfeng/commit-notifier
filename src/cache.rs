@@ -46,9 +46,7 @@ pub fn store(cache: &Connection, target: &str, commit: &str, hit: bool) -> Resul
 }
 
 pub fn remove(cache: &Connection, target: &str) -> Result<(), Error> {
-    let mut stmt = cache.prepare_cached(
-        "DELETE FROM commits_cache WHERE target_commit = ?1",
-    )?;
+    let mut stmt = cache.prepare_cached("DELETE FROM commits_cache WHERE target_commit = ?1")?;
     log::trace!("delete cache for target commit: {}", target);
     stmt.execute(params!(target))?;
     Ok(())
