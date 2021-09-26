@@ -21,7 +21,7 @@
         rec {
           packages.${name} = pkgs.callPackage ./commit-notifier.nix { };
           defaultPackage = packages.${name};
-          apps.${name} = utils.lib.mkApp { drv = packages.${name}; };
+          apps.${name} = utils.mkApp { drv = packages.${name}; };
           defaultApp = apps.${name};
 
           devShell = pkgs.mkShell {
@@ -41,5 +41,6 @@
       overlay = final: prev: {
         commit-notifier = self.defaultPackage.${final.system};
       };
+      nixosModules.commit-notifier = ./modules/services/commit-notifier.nix;
     };
 }
