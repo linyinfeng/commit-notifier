@@ -452,8 +452,9 @@ fn parse_commit_add(input: String) -> Result<(String, String, String), ParseErro
 
     let get = |n| captures.get(n).unwrap().as_str();
     lines[0] = get(3);
-    let comment = lines.into_iter().map(|l| format!("{}\n", l)).collect();
-    let result = (get(1).to_owned(), get(2).to_owned(), comment);
+    let comment: String = lines.into_iter().map(|l| format!("{}\n", l)).collect();
+    let comment_trimmed = comment.trim().to_owned();
+    let result = (get(1).to_owned(), get(2).to_owned(), comment_trimmed);
 
     log::info!("parse success: {:?}", result);
 
