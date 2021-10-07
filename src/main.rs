@@ -14,8 +14,8 @@ use teloxide::prelude::*;
 use teloxide::types::Me;
 use teloxide::types::ParseMode;
 use teloxide::utils::command::BotCommand;
-use teloxide::utils::markdown;
 use teloxide::utils::command::ParseError;
+use teloxide::utils::markdown;
 use tokio::time::sleep;
 
 #[derive(BotCommand)]
@@ -389,7 +389,12 @@ async fn prepare_lock(
     }
 }
 
-fn check_message(repo: &str, commit: &str, info: &repo::CommitInfo, result: &repo::CheckResult) -> String {
+fn check_message(
+    repo: &str,
+    commit: &str,
+    info: &repo::CommitInfo,
+    result: &repo::CheckResult,
+) -> String {
     format!(
         "
 {repo}/`{commit}`
@@ -429,7 +434,7 @@ where
 }
 
 static COMMIT_ADD_RE: once_cell::sync::Lazy<Regex> =
-once_cell::sync::Lazy::new(|| Regex::new("([a-zA-Z0-9_\\-]*) ([a-z0-9]*) (.*)").unwrap());
+    once_cell::sync::Lazy::new(|| Regex::new("([a-zA-Z0-9_\\-]*) ([a-z0-9]*) (.*)").unwrap());
 
 fn parse_commit_add(input: String) -> Result<(String, String, String), ParseError> {
     log::info!("parse raw input: {}", input);

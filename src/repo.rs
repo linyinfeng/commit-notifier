@@ -19,9 +19,12 @@ use tokio::task;
 use crate::cache;
 use crate::error::Error;
 
-static NAME_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| Regex::new("^[a-zA-Z0-9_\\-]*$").unwrap());
-static ORIGIN_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| Regex::new("^origin/(.*)$").unwrap());
-static TASKS: once_cell::sync::Lazy<Mutex<BTreeSet<Task>>> = once_cell::sync::Lazy::new(|| Mutex::new(BTreeSet::new()));
+static NAME_RE: once_cell::sync::Lazy<Regex> =
+    once_cell::sync::Lazy::new(|| Regex::new("^[a-zA-Z0-9_\\-]*$").unwrap());
+static ORIGIN_RE: once_cell::sync::Lazy<Regex> =
+    once_cell::sync::Lazy::new(|| Regex::new("^origin/(.*)$").unwrap());
+static TASKS: once_cell::sync::Lazy<Mutex<BTreeSet<Task>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(BTreeSet::new()));
 
 pub struct Paths {
     pub outer: PathBuf,
@@ -217,6 +220,7 @@ pub async fn check(lock: &TaskGuard, target_commit: &str) -> Result<CheckResult,
     }
 
     let result = {
+        let repo_name = name.clone();
         let target_commit = target_commit.to_owned();
         task::spawn_blocking(move || -> Result<CheckResult, Error> {
             let mut branches_hit = BTreeSet::new();
@@ -244,7 +248,15 @@ pub async fn check(lock: &TaskGuard, target_commit: &str) -> Result<CheckResult,
                 };
                 let root = branch.get().peel_to_commit()?;
                 let str_root = format!("{}", root.id());
+
+                log::info!(
+                    "start updating for commit {} on {}/{}",
+                    target_commit,
+                    repo_name,
+                    branch_name
+                );
                 update_from_root(&cache, &target_commit, &repo, root)?;
+
                 let hit_in_branch = cache::query(&cache, &target_commit, &str_root)?
                     .expect("update_from_root should build cache");
                 if hit_in_branch {
@@ -252,19 +264,30 @@ pub async fn check(lock: &TaskGuard, target_commit: &str) -> Result<CheckResult,
                 }
             }
 
+            log::info!(
+                "finished updating for commit {} on {}",
+                target_commit,
+                repo_name
+            );
+
             let branches_hit_diff = branches_hit
                 .difference(&branches_hit_old)
                 .cloned()
                 .collect();
 
             results.data.insert(
-                target_commit,
+                target_commit.clone(),
                 CommitResults {
                     info: old_commit_results.info,
                     branches: branches_hit.clone(),
                 },
             );
             write_results(&paths.results, &results)?;
+            log::info!(
+                "result written for commit {} on {}",
+                target_commit,
+                repo_name
+            );
 
             Ok(CheckResult {
                 all: branches_hit,
@@ -306,11 +329,7 @@ fn update_from_root<'repo>(
                 continue;
             }
             if visited.len() % 1000 == 0 {
-                log::info!(
-                    "checking '{}' phase 1, visited {} commits",
-                    target,
-                    visited.len()
-                );
+                log::info!("checking phase 1, visited {} commits", visited.len());
             }
             let str_commit = format!("{}", commit.id());
             if cache::query(cache, target, &str_commit)?.is_none() {
@@ -369,12 +388,8 @@ fn update_from_root<'repo>(
     // phase 4: build caches
     let mut in_memory_cache: BTreeMap<Oid, bool> = BTreeMap::new();
     while let Some(commit) = sorted.pop() {
-        if sorted.len() % 1000 == 0 {
-            log::info!(
-                "checking '{}' phase 4, remaining {} commits",
-                target,
-                sorted.len()
-            );
+        if !sorted.is_empty() && sorted.len() % 1000 == 0 {
+            log::info!("checking phase 4, remaining {} commits", sorted.len());
         }
 
         let oid = commit.id();
