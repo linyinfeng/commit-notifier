@@ -1,7 +1,11 @@
 [package]
 name = "commit-notifier"
-version = "0.1.0"
+authors = [ "Lin Yinfeng <lin.yinfeng@outlook.com>" ]
+version = "0.1.1"
 edition = "2018"
+description = """
+A simple bot tracking commits in branches
+"""
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -15,6 +19,7 @@ log = "*"
 pretty_env_logger = "*"
 thiserror = "*"
 derive_more = "*"
+clap = "*"
 structopt = "*"
 regex = "*"
 serde_json = "*"

@@ -2,9 +2,7 @@
 
 pkgs.mkShell {
   packages = with pkgs; [
-    rustc
-    cargo
-    rustfmt
+    rustup
 
     pkg-config
     sqlite

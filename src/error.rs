@@ -5,6 +5,16 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum Error {
+    #[error("unclosed quote")]
+    UnclosedQuote,
+    #[error("bad escape")]
+    BadEscape,
+    #[error("{0}")]
+    Clap(#[from] clap::Error),
+    #[error("repository '{0}' already exists")]
+    RepoExists(String),
+    #[error("another task is running on repository '{0}', please wait")]
+    AnotherTaskRunning(String),
     #[error("cache database error: {0}")]
     DB(#[from] rusqlite::Error),
     #[error("task join error: {0}")]
@@ -42,8 +52,10 @@ pub enum Error {
     InvalidChatDir(String),
     #[error("parse error: '{0}'")]
     ParseInt(#[from] std::num::ParseIntError),
-    #[error("wrong command input: '{0}'")]
-    WrongCommandInput(String),
+    #[error("invalid regex: {0}")]
+    Regex(#[from] regex::Error),
+    #[error("internal error: invalid try lock")]
+    TryLock,
 }
 
 impl Error {
@@ -52,7 +64,7 @@ impl Error {
         cx: &UpdateWithCx<AutoSend<Bot>, Message>,
     ) -> Result<(), teloxide::RequestError> {
         log::warn!("report error to chat {}: {}", cx.chat_id(), self);
-        cx.reply_to(format!("error: {}", self)).await?;
+        cx.reply_to(format!("{}", self)).await?;
 
         Ok(())
     }

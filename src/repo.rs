@@ -1,52 +1,27 @@
-use crate::options;
+pub mod paths;
+pub mod results;
+pub mod settings;
+pub mod tasks;
+
 use git2::{Commit, Oid, Repository};
 use regex::Regex;
 use rusqlite::Connection;
-use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
-use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufWriter};
-use std::path::Path;
-use std::sync::Mutex;
-use std::{
-    fs,
-    path::PathBuf,
-    process::{Command, Output},
-};
-use tokio::task;
+use std::fs;
+use std::ops::DerefMut;
+use std::process::{Command, Output};
+use tokio::task::{self, spawn_blocking};
 
 use crate::cache;
 use crate::error::Error;
+use crate::repo::results::CommitResults;
+use crate::repo::tasks::TaskRef;
 
-static NAME_RE: once_cell::sync::Lazy<Regex> =
-    once_cell::sync::Lazy::new(|| Regex::new("^[a-zA-Z0-9_\\-]*$").unwrap());
+use self::settings::CommitSettings;
+use self::tasks::{TaskGuard, TaskGuardBare};
+
 static ORIGIN_RE: once_cell::sync::Lazy<Regex> =
     once_cell::sync::Lazy::new(|| Regex::new("^origin/(.*)$").unwrap());
-static TASKS: once_cell::sync::Lazy<Mutex<BTreeSet<Task>>> =
-    once_cell::sync::Lazy::new(|| Mutex::new(BTreeSet::new()));
-
-pub struct Paths {
-    pub outer: PathBuf,
-    pub repo: PathBuf,
-    pub cache: PathBuf,
-    pub results: PathBuf,
-}
-
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
-pub struct Task {
-    pub chat: i64,
-    pub name: String,
-}
-
-pub struct TaskGuard {
-    pub task: Task,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CommitInfo {
-    pub comment: String,
-}
 
 #[derive(Debug)]
 pub struct CheckResult {
@@ -54,96 +29,8 @@ pub struct CheckResult {
     pub new: BTreeSet<String>,
 }
 
-#[derive(Default, Debug, Clone, Serialize, Deserialize)]
-pub struct Results {
-    data: BTreeMap<String, CommitResults>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CommitResults {
-    info: CommitInfo,
-    branches: BTreeSet<String>,
-}
-
-fn chat_dir(chat: i64) -> PathBuf {
-    let working_dir = &options::get().working_dir;
-    let chat_dir_name = if chat < 0 {
-        format!("_{}", chat.unsigned_abs())
-    } else {
-        format!("{}", chat)
-    };
-    working_dir.join(chat_dir_name)
-}
-
-fn get_paths(chat: i64, name: &str) -> Result<Paths, Error> {
-    if !NAME_RE.is_match(name) {
-        return Err(Error::Name(name.to_owned()));
-    }
-
-    let chat_working_dir = chat_dir(chat);
-    if !chat_working_dir.is_dir() {
-        Err(Error::NotInAllowList(chat))
-    } else {
-        let outer_dir = chat_working_dir.join(name);
-        Ok(Paths {
-            outer: outer_dir.clone(),
-            repo: outer_dir.join("repo"),
-            cache: outer_dir.join("cache.sqlite"),
-            results: outer_dir.join("results.json"),
-        })
-    }
-}
-
-pub fn get_chats() -> Result<BTreeSet<i64>, Error> {
-    let mut chats = BTreeSet::new();
-    let working_dir = &options::get().working_dir;
-    let dirs = fs::read_dir(working_dir)?;
-    for dir_res in dirs {
-        let dir = dir_res?;
-        let name_os = dir.file_name();
-        let name = name_os.into_string().map_err(Error::InvalidOsString)?;
-
-        let invalid_error = Err(Error::InvalidChatDir(name.clone()));
-        if name.is_empty() {
-            return invalid_error;
-        }
-
-        let name_vec: Vec<_> = name.chars().collect();
-        if name_vec[0] == '_' {
-            let n: i64 = name_vec[1..].iter().collect::<String>().parse()?;
-            chats.insert(-n);
-        } else {
-            chats.insert(name.parse()?);
-        }
-    }
-    Ok(chats)
-}
-
-pub fn get_repos(chat: i64) -> Result<BTreeSet<String>, Error> {
-    let mut repos = BTreeSet::new();
-
-    let chat_working_dir = chat_dir(chat);
-    let dirs = fs::read_dir(chat_working_dir)?;
-    for dir_res in dirs {
-        let dir = dir_res?;
-        let name_os = dir.file_name();
-        let name = name_os.into_string().map_err(Error::InvalidOsString)?;
-        repos.insert(name);
-    }
-
-    Ok(repos)
-}
-
-pub fn get_commits(chat: i64, name: &str) -> Result<BTreeMap<String, CommitInfo>, Error> {
-    let paths = get_paths(chat, name)?;
-    let res = read_results(paths.results)?;
-    Ok(res.data.into_iter().map(|(k, v)| (k, v.info)).collect())
-}
-
-pub async fn create(lock: &TaskGuard, url: &str) -> Result<Output, Error> {
-    let chat = lock.task.chat;
-    let name = &lock.task.name;
-    let paths = get_paths(chat, name)?;
+pub async fn create(lock: TaskGuardBare, url: &str) -> Result<Output, Error> {
+    let paths = lock.paths()?;
 
     let repo_path = paths.repo;
     log::info!("try clone '{}' into {:?}", url, repo_path);
@@ -157,7 +44,7 @@ pub async fn create(lock: &TaskGuard, url: &str) -> Result<Output, Error> {
     if !output.status.success() {
         return Err(Error::GitClone {
             url: url.to_owned(),
-            name: name.to_owned(),
+            name: lock.repo_name().to_owned(),
             output,
         });
     }
@@ -168,10 +55,8 @@ pub async fn create(lock: &TaskGuard, url: &str) -> Result<Output, Error> {
     Ok(output)
 }
 
-pub async fn fetch(lock: &TaskGuard) -> Result<Output, Error> {
-    let name = &lock.task.name;
-    let paths = get_paths(lock.task.chat, name)?;
-
+pub async fn fetch(task: TaskGuard) -> Result<Output, Error> {
+    let paths = task.paths()?;
     let repo_path = paths.repo;
     log::info!("fetch {:?}", repo_path);
 
@@ -188,7 +73,7 @@ pub async fn fetch(lock: &TaskGuard) -> Result<Output, Error> {
     };
     if !output.status.success() {
         return Err(Error::GitFetch {
-            name: name.to_owned(),
+            name: task.repo_name().to_owned(),
             output,
         });
     }
@@ -197,107 +82,94 @@ pub async fn fetch(lock: &TaskGuard) -> Result<Output, Error> {
 }
 
 pub fn exists(chat: i64, name: &str) -> Result<bool, Error> {
-    let path = get_paths(chat, name)?.repo;
+    let path = paths::get(chat, name)?.repo;
     Ok(path.is_dir())
 }
 
-pub async fn remove(lock: &TaskGuard) -> Result<(), Error> {
-    let paths = get_paths(lock.task.chat, &lock.task.name)?;
+pub async fn remove(lock: TaskGuardBare) -> Result<(), Error> {
+    let paths = lock.paths()?;
 
-    log::info!("try remove result file {:?}", paths.outer);
+    log::info!("try remove repository outer directory: {:?}", paths.outer);
     fs::remove_dir_all(&paths.outer)?;
-    log::info!("cache db {:?} removed", &paths.outer);
+    log::info!("repository outer directory removed: {:?}", &paths.outer);
 
     Ok(())
 }
 
-pub async fn check(lock: &TaskGuard, target_commit: &str) -> Result<CheckResult, Error> {
-    let Task { chat, ref name } = lock.task;
-    let paths = get_paths(chat, name)?;
+pub async fn check(task: TaskGuard, target_commit: &str) -> Result<CheckResult, Error> {
+    let target_commit = target_commit.to_owned();
+    spawn_blocking(move || {
+        let result = {
+            let mut guard = task.resources.lock().unwrap();
+            let resources = guard.deref_mut();
 
-    if !paths.repo.is_dir() {
-        return Err(Error::UnknownRepository(name.to_owned()));
-    }
-
-    let result = {
-        let repo_name = name.clone();
-        let target_commit = target_commit.to_owned();
-        task::spawn_blocking(move || -> Result<CheckResult, Error> {
             let mut branches_hit = BTreeSet::new();
 
-            let mut results = read_results(&paths.results)?;
+            let results = &mut resources.results;
+
+            // save old results
             let old_commit_results = match results.data.remove(&target_commit) {
                 Some(bs) => bs,
-                None => return Err(Error::UnknownCommit(target_commit)),
+                None => Default::default(), // create default result
             };
             let branches_hit_old = old_commit_results.branches;
 
-            let cache_exists = paths.cache.is_file();
-            let cache = Connection::open(&paths.cache)?;
-            if !cache_exists {
-                cache::initialize(&cache)?;
-            }
-
-            let repo = Repository::open(&paths.repo)?;
+            let repo = &resources.repo;
             let branches = repo.branches(Some(git2::BranchType::Remote))?;
+            let branch_regex = Regex::new(&resources.settings.branch_regex)?;
             for branch_iter_res in branches {
                 let (branch, _) = branch_iter_res?;
+                // clean up name
                 let branch_name = match branch.name()?.and_then(branch_name_map_filter) {
                     None => continue,
                     Some(n) => n,
                 };
+                // skip if not match
+                if !branch_regex.is_match(branch_name) {
+                    continue;
+                }
                 let root = branch.get().peel_to_commit()?;
                 let str_root = format!("{}", root.id());
 
-                log::info!(
-                    "start updating for commit {} on {}/{}",
-                    target_commit,
-                    repo_name,
-                    branch_name
-                );
-                update_from_root(&cache, &target_commit, &repo, root)?;
+                // build the cache
+                update_from_root(&resources.cache, &target_commit, repo, root)?;
 
-                let hit_in_branch = cache::query(&cache, &target_commit, &str_root)?
+                // query result from cache
+                let hit_in_branch = cache::query(&resources.cache, &target_commit, &str_root)?
                     .expect("update_from_root should build cache");
                 if hit_in_branch {
                     branches_hit.insert(branch_name.to_owned());
                 }
             }
 
+            // insert new results
+            results.data.insert(
+                target_commit.clone(),
+                CommitResults {
+                    branches: branches_hit.clone(),
+                },
+            );
             log::info!(
                 "finished updating for commit {} on {}",
                 target_commit,
-                repo_name
+                task.repo_name()
             );
 
+            // construct final check results
             let branches_hit_diff = branches_hit
                 .difference(&branches_hit_old)
                 .cloned()
                 .collect();
-
-            results.data.insert(
-                target_commit.clone(),
-                CommitResults {
-                    info: old_commit_results.info,
-                    branches: branches_hit.clone(),
-                },
-            );
-            write_results(&paths.results, &results)?;
-            log::info!(
-                "result written for commit {} on {}",
-                target_commit,
-                repo_name
-            );
-
-            Ok(CheckResult {
+            CheckResult {
                 all: branches_hit,
                 new: branches_hit_diff,
-            })
-        })
-        .await??
-    };
-
-    Ok(result)
+            }
+        };
+        // release the lock and save result
+        task.save_resources()?;
+        Ok(result)
+    })
+    .await?
 }
 
 fn branch_name_map_filter(name: &str) -> Option<&str> {
@@ -317,7 +189,7 @@ fn update_from_root<'repo>(
     cache: &Connection,
     target: &str,
     repo: &'repo Repository,
-    root: Commit<'repo>,
+    root: Commit,
 ) -> Result<(), Error> {
     // phase 1: find commits with out cache
     let todo = {
@@ -420,98 +292,37 @@ fn update_from_root<'repo>(
     Ok(())
 }
 
-pub async fn commit_add(lock: &TaskGuard, commit: &str, info: CommitInfo) -> Result<(), Error> {
-    let Task { chat, ref name } = lock.task;
-    let paths = get_paths(chat, name)?;
-    if !paths.repo.is_dir() {
-        return Err(Error::UnknownRepository(name.to_owned()));
+pub async fn commit_add(
+    lock: TaskGuard,
+    commit: &str,
+    settings: CommitSettings,
+) -> Result<(), Error> {
+    {
+        let mut resources = lock.resources.lock().unwrap();
+        if resources.settings.commits.contains_key(commit) {
+            return Err(Error::CommitExists(commit.to_owned()));
+        }
+        resources
+            .settings
+            .commits
+            .insert(commit.to_owned(), settings);
     }
-    let mut results = read_results(&paths.results)?;
-    if results.data.contains_key(commit) {
-        return Err(Error::CommitExists(commit.to_owned()));
-    }
-    results.data.insert(
-        commit.to_owned(),
-        CommitResults {
-            info,
-            branches: BTreeSet::new(),
-        },
-    );
-    write_results(paths.results, &results)?;
+    lock.save_resources()?;
     Ok(())
 }
 
-pub async fn commit_info(lock: &TaskGuard, commit: &str) -> Result<CommitInfo, Error> {
-    let Task { chat, ref name } = lock.task;
-    let paths = get_paths(chat, name)?;
-    let mut results = read_results(&paths.results)?;
-    match results.data.remove(commit) {
-        Some(r) => Ok(r.info),
-        None => Err(Error::UnknownCommit(commit.to_owned())),
-    }
-}
+pub async fn commit_remove(lock: TaskGuard, commit: &str) -> Result<(), Error> {
+    {
+        let mut resources = lock.resources.lock().unwrap();
 
-pub async fn commit_remove(lock: &TaskGuard, commit: &str) -> Result<(), Error> {
-    let Task { chat, ref name } = lock.task;
-    let paths = get_paths(chat, name)?;
-    if !paths.repo.is_dir() {
-        return Err(Error::UnknownRepository(name.to_owned()));
-    }
+        if !resources.settings.commits.contains_key(commit) {
+            return Err(Error::UnknownCommit(commit.to_owned()));
+        }
 
-    // remove cache
-    let cache_exists = paths.cache.is_file();
-    if cache_exists {
-        let cache = Connection::open(&paths.cache)?;
-        cache::remove(&cache, commit)?;
+        resources.settings.commits.remove(commit);
+        resources.results.data.remove(commit);
+        cache::remove(&resources.cache, commit)?;
     }
-
-    let mut results = read_results(&paths.results)?;
-    if !results.data.contains_key(commit) {
-        return Err(Error::UnknownCommit(commit.to_owned()));
-    }
-    results.data.remove(commit);
-    write_results(paths.results, &results)?;
+    lock.save_resources()?;
     Ok(())
-}
-
-pub fn lock_task(task: Task) -> Option<TaskGuard> {
-    let mut running = TASKS.lock().unwrap();
-    if running.contains(&task) {
-        None
-    } else {
-        log::debug!("task locked: {:?}", task);
-        running.insert(task.clone());
-        Some(TaskGuard { task })
-    }
-}
-
-impl Drop for TaskGuard {
-    fn drop(&mut self) {
-        let mut running = TASKS.lock().unwrap();
-        let removed = running.remove(&self.task);
-        assert!(removed);
-        log::debug!("task unlocked: {:?}", self.task);
-    }
-}
-
-fn read_results<P: AsRef<Path> + fmt::Debug>(path: P) -> Result<Results, Error> {
-    if !path.as_ref().is_file() {
-        log::info!("create result file: {:?}", path);
-        write_results(&path, &Default::default())?;
-    }
-    log::debug!("read from file: {:?}", path);
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    Ok(serde_json::from_reader(reader)?)
-}
-
-fn write_results<P: AsRef<Path> + fmt::Debug>(path: P, rs: &Results) -> Result<(), Error> {
-    log::debug!("write to file: {:?}", path);
-    let file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)?;
-    let writer = BufWriter::new(file);
-    Ok(serde_json::to_writer_pretty(writer, rs)?)
 }
