@@ -3,7 +3,7 @@ pub mod results;
 pub mod settings;
 pub mod tasks;
 
-use git2::{Commit, Oid, Repository};
+use git2::{BranchType, Commit, Oid, Repository};
 use regex::Regex;
 use rusqlite::Connection;
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,16 +17,23 @@ use crate::error::Error;
 use crate::repo::results::CommitResults;
 use crate::repo::tasks::TaskRef;
 
-use self::settings::CommitSettings;
+use self::results::BranchResults;
+use self::settings::{BranchSettings, CommitSettings};
 use self::tasks::{TaskGuard, TaskGuardBare};
 
 static ORIGIN_RE: once_cell::sync::Lazy<Regex> =
     once_cell::sync::Lazy::new(|| Regex::new("^origin/(.*)$").unwrap());
 
 #[derive(Debug)]
-pub struct CheckResult {
+pub struct CommitCheckResult {
     pub all: BTreeSet<String>,
     pub new: BTreeSet<String>,
+}
+
+#[derive(Debug)]
+pub struct BranchCheckResult {
+    pub old: Option<String>,
+    pub new: Option<String>,
 }
 
 pub async fn create(lock: TaskGuardBare, url: &str) -> Result<Output, Error> {
@@ -96,7 +103,45 @@ pub async fn remove(lock: TaskGuardBare) -> Result<(), Error> {
     Ok(())
 }
 
-pub async fn check(task: TaskGuard, target_commit: &str) -> Result<CheckResult, Error> {
+pub async fn commit_add(
+    lock: TaskGuard,
+    commit: &str,
+    settings: CommitSettings,
+) -> Result<(), Error> {
+    {
+        let mut resources = lock.resources.lock().unwrap();
+        if resources.settings.commits.contains_key(commit) {
+            return Err(Error::CommitExists(commit.to_owned()));
+        }
+        resources
+            .settings
+            .commits
+            .insert(commit.to_owned(), settings);
+    }
+    lock.save_resources()?;
+    Ok(())
+}
+
+pub async fn commit_remove(lock: TaskGuard, commit: &str) -> Result<(), Error> {
+    {
+        let mut resources = lock.resources.lock().unwrap();
+
+        if !resources.settings.commits.contains_key(commit) {
+            return Err(Error::UnknownCommit(commit.to_owned()));
+        }
+
+        resources.settings.commits.remove(commit);
+        resources.results.commits.remove(commit);
+        cache::remove(&resources.cache, commit)?;
+    }
+    lock.save_resources()?;
+    Ok(())
+}
+
+pub async fn commit_check(
+    task: TaskGuard,
+    target_commit: &str,
+) -> Result<CommitCheckResult, Error> {
     let target_commit = target_commit.to_owned();
     spawn_blocking(move || {
         let result = {
@@ -108,7 +153,7 @@ pub async fn check(task: TaskGuard, target_commit: &str) -> Result<CheckResult, 
             let results = &mut resources.results;
 
             // save old results
-            let old_commit_results = match results.data.remove(&target_commit) {
+            let old_commit_results = match results.commits.remove(&target_commit) {
                 Some(bs) => bs,
                 None => Default::default(), // create default result
             };
@@ -143,7 +188,7 @@ pub async fn check(task: TaskGuard, target_commit: &str) -> Result<CheckResult, 
             }
 
             // insert new results
-            results.data.insert(
+            results.commits.insert(
                 target_commit.clone(),
                 CommitResults {
                     branches: branches_hit.clone(),
@@ -160,7 +205,7 @@ pub async fn check(task: TaskGuard, target_commit: &str) -> Result<CheckResult, 
                 .difference(&branches_hit_old)
                 .cloned()
                 .collect();
-            CheckResult {
+            CommitCheckResult {
                 all: branches_hit,
                 new: branches_hit_diff,
             }
@@ -300,37 +345,78 @@ fn update_from_root<'repo>(
     Ok(())
 }
 
-pub async fn commit_add(
+pub async fn branch_add(
     lock: TaskGuard,
-    commit: &str,
-    settings: CommitSettings,
+    branch: &str,
+    settings: BranchSettings,
 ) -> Result<(), Error> {
     {
         let mut resources = lock.resources.lock().unwrap();
-        if resources.settings.commits.contains_key(commit) {
-            return Err(Error::CommitExists(commit.to_owned()));
+        if resources.settings.branches.contains_key(branch) {
+            return Err(Error::BranchExists(branch.to_owned()));
         }
         resources
             .settings
-            .commits
-            .insert(commit.to_owned(), settings);
+            .branches
+            .insert(branch.to_owned(), settings);
     }
     lock.save_resources()?;
     Ok(())
 }
 
-pub async fn commit_remove(lock: TaskGuard, commit: &str) -> Result<(), Error> {
+pub async fn branch_remove(lock: TaskGuard, branch: &str) -> Result<(), Error> {
     {
         let mut resources = lock.resources.lock().unwrap();
 
-        if !resources.settings.commits.contains_key(commit) {
-            return Err(Error::UnknownCommit(commit.to_owned()));
+        if !resources.settings.branches.contains_key(branch) {
+            return Err(Error::UnknownBranch(branch.to_owned()));
         }
 
-        resources.settings.commits.remove(commit);
-        resources.results.data.remove(commit);
-        cache::remove(&resources.cache, commit)?;
+        resources.settings.branches.remove(branch);
+        resources.results.branches.remove(branch);
     }
     lock.save_resources()?;
     Ok(())
+}
+
+pub async fn branch_check(lock: TaskGuard, branch_name: &str) -> Result<BranchCheckResult, Error> {
+    let result = {
+        let mut resources = lock.resources.lock().unwrap();
+        let old_result = match resources.results.branches.remove(branch_name) {
+            Some(r) => r,
+            None => Default::default(),
+        };
+
+        // get the new commit (optional)
+        let remote_branch_name = format!("origin/{}", branch_name);
+        let commit = match resources
+            .repo
+            .find_branch(&remote_branch_name, BranchType::Remote)
+        {
+            Ok(branch) => Some(branch.into_reference().peel_to_commit()?.id().to_string()),
+            Err(_error) => {
+                log::warn!(
+                    "branch {} not found in ({}, {})",
+                    branch_name,
+                    lock.chat(),
+                    lock.repo_name()
+                );
+                None
+            }
+        };
+
+        resources.results.branches.insert(
+            branch_name.to_owned(),
+            BranchResults {
+                commit: commit.clone(),
+            },
+        );
+
+        BranchCheckResult {
+            old: old_result.commit,
+            new: commit,
+        }
+    };
+    lock.save_resources()?;
+    Ok(result)
 }

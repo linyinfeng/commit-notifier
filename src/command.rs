@@ -36,8 +36,14 @@ pub enum Notifier {
     },
     #[structopt(about = "remove a commit")]
     CommitRemove { repo: String, hash: String },
-    #[structopt(about = "fire a check immediately")]
-    Check { repo: String, hash: String },
+    #[structopt(about = "fire a commit check immediately")]
+    CommitCheck { repo: String, hash: String },
+    #[structopt(about = "add a branch")]
+    BranchAdd { repo: String, branch: String },
+    #[structopt(about = "remove a branch")]
+    BranchRemove { repo: String, branch: String },
+    #[structopt(about = "fire a branch check immediately")]
+    BranchCheck { repo: String, branch: String },
     #[structopt(about = "list repositories and commits")]
     List,
 }

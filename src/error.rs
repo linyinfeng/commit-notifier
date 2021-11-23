@@ -42,10 +42,14 @@ pub enum Error {
     Serde(#[from] serde_json::Error),
     #[error("unknown commit: '{0}'")]
     UnknownCommit(String),
+    #[error("unknown branch: '{0}'")]
+    UnknownBranch(String),
     #[error("unknown repository: '{0}'")]
     UnknownRepository(String),
     #[error("commit already exists: '{0}'")]
     CommitExists(String),
+    #[error("branch already exists: '{0}'")]
+    BranchExists(String),
     #[error("invalid os string: '{0:?}'")]
     InvalidOsString(OsString),
     #[error("invalid chat directory: '{0}'")]

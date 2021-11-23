@@ -6,9 +6,15 @@ use serde::{Deserialize, Serialize};
 pub struct Settings {
     pub branch_regex: String,
     pub commits: BTreeMap<String, CommitSettings>,
+    pub branches: BTreeMap<String, BranchSettings>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CommitSettings {
     pub comment: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BranchSettings {
+    // currently nothing
 }

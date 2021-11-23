@@ -10,9 +10,11 @@ use std::str::FromStr;
 use chrono::Utc;
 use cron::Schedule;
 use regex::Regex;
+use repo::settings::BranchSettings;
 use repo::tasks::Task;
 use repo::tasks::TaskGuard;
 use repo::tasks::TaskGuardBare;
+use repo::BranchCheckResult;
 use teloxide::prelude::*;
 use teloxide::types::Me;
 use teloxide::types::ParseMode;
@@ -47,7 +49,14 @@ async fn answer(
                 comment,
             } => commit_add(&cx, repo, hash, comment).await,
             command::Notifier::CommitRemove { repo, hash } => commit_remove(&cx, repo, hash).await,
-            command::Notifier::Check { repo, hash } => check(&cx, repo, hash).await,
+            command::Notifier::CommitCheck { repo, hash } => commit_check(&cx, repo, hash).await,
+            command::Notifier::BranchAdd { repo, branch } => branch_add(&cx, repo, branch).await,
+            command::Notifier::BranchRemove { repo, branch } => {
+                branch_remove(&cx, repo, branch).await
+            }
+            command::Notifier::BranchCheck { repo, branch } => {
+                branch_check(&cx, repo, branch).await
+            }
             command::Notifier::List => list(&cx).await,
         },
         Err(e) => Err(e.into()),
@@ -164,22 +173,56 @@ async fn update(bot: AutoSend<Bot>) -> Result<(), teloxide::RequestError> {
                 continue;
             }
 
+            // check branches of the repo
+            let branches = {
+                let resources = lock.resources.lock().unwrap();
+                resources.settings.branches.clone()
+            };
+            for (branch, info) in branches {
+                let result = match repo::branch_check(lock.clone(), &branch).await {
+                    Err(e) => {
+                        log::warn!(
+                            "failed to check branch ({}, {}, {}): {}",
+                            chat,
+                            repo,
+                            branch,
+                            e
+                        );
+                        continue;
+                    }
+                    Ok(r) => r,
+                };
+                log::info!("finished branch check ({}, {}, {})", chat, repo, branch);
+                if result.new != result.old {
+                    let message = branch_check_message(&repo, &branch, &info, &result);
+                    bot.send_message(chat, message)
+                        .parse_mode(ParseMode::MarkdownV2)
+                        .await?;
+                }
+            }
+
+            // check commits of the repo
             let commits = {
                 let resources = lock.resources.lock().unwrap();
                 resources.settings.commits.clone()
             };
             for (commit, info) in commits {
-                let result = match repo::check(lock.clone(), &commit).await {
+                let result = match repo::commit_check(lock.clone(), &commit).await {
                     Err(e) => {
-                        log::warn!("failed to check ({}, {}, {}): {}", chat, repo, commit, e);
+                        log::warn!(
+                            "failed to check commit ({}, {}, {}): {}",
+                            chat,
+                            repo,
+                            commit,
+                            e
+                        );
                         continue;
                     }
                     Ok(r) => r,
                 };
-
-                log::info!("check ({}, {}, {}) finished", chat, repo, commit);
+                log::info!("finished commit check ({}, {}, {})", chat, repo, commit);
                 if !result.new.is_empty() {
-                    let message = check_message(&repo, &commit, &info, &result);
+                    let message = commit_check_message(&repo, &commit, &info, &result);
                     bot.send_message(chat, message)
                         .parse_mode(ParseMode::MarkdownV2)
                         .await?;
@@ -293,10 +336,10 @@ async fn commit_add(
     comment: String,
 ) -> Result<(), CommandError> {
     let lock = prepare_lock(cx, &repo)?;
-    let info = CommitSettings { comment };
-    repo::commit_add(lock, &hash, info).await?;
+    let settings = CommitSettings { comment };
+    repo::commit_add(lock, &hash, settings).await?;
     cx.reply_to(format!("commit {} added", hash)).await?;
-    check(cx, repo, hash).await
+    commit_check(cx, repo, hash).await
 }
 
 async fn commit_remove(
@@ -310,7 +353,7 @@ async fn commit_remove(
     Ok(())
 }
 
-async fn check(
+async fn commit_check(
     cx: &UpdateWithCx<AutoSend<Bot>, Message>,
     repo: String,
     hash: String,
@@ -326,8 +369,53 @@ async fn check(
             .ok_or_else(|| error::Error::UnknownCommit(hash.clone()))?
             .clone()
     };
-    let result = repo::check(lock, &hash).await?;
-    let reply = check_message(&repo, &hash, &commit_settings, &result);
+    let result = repo::commit_check(lock, &hash).await?;
+    let reply = commit_check_message(&repo, &hash, &commit_settings, &result);
+    cx.reply_to(reply).parse_mode(ParseMode::MarkdownV2).await?;
+
+    Ok(())
+}
+
+async fn branch_add(
+    cx: &UpdateWithCx<AutoSend<Bot>, Message>,
+    repo: String,
+    branch: String,
+) -> Result<(), CommandError> {
+    let lock = prepare_lock(cx, &repo)?;
+    let settings = BranchSettings {};
+    repo::branch_add(lock, &branch, settings).await?;
+    branch_check(cx, repo, branch).await
+}
+
+async fn branch_remove(
+    cx: &UpdateWithCx<AutoSend<Bot>, Message>,
+    repo: String,
+    branch: String,
+) -> Result<(), CommandError> {
+    let lock = prepare_lock(cx, &repo)?;
+    repo::branch_remove(lock, &branch).await?;
+    cx.reply_to(format!("branch {} removed", branch)).await?;
+    Ok(())
+}
+
+async fn branch_check(
+    cx: &UpdateWithCx<AutoSend<Bot>, Message>,
+    repo: String,
+    branch: String,
+) -> Result<(), CommandError> {
+    let lock = prepare_lock(cx, &repo)?;
+    repo::fetch(lock.clone()).await?;
+    let branch_settings = {
+        let resources = lock.resources.lock().unwrap();
+        resources
+            .settings
+            .branches
+            .get(&branch)
+            .ok_or_else(|| error::Error::UnknownBranch(branch.clone()))?
+            .clone()
+    };
+    let result = repo::branch_check(lock, &branch).await?;
+    let reply = branch_check_message(&repo, &branch, &branch_settings, &result);
     cx.reply_to(reply).parse_mode(ParseMode::MarkdownV2).await?;
 
     Ok(())
@@ -373,15 +461,14 @@ fn prepare_lock_bare(
     }
 }
 
-fn check_message(
+fn commit_check_message(
     repo: &str,
     commit: &str,
     settings: &CommitSettings,
-    result: &repo::CheckResult,
+    result: &repo::CommitCheckResult,
 ) -> String {
     format!(
-        "
-{repo}/`{commit}`
+        "{repo}/`{commit}`
 
 *comment*:
 {comment}
@@ -398,6 +485,45 @@ fn check_message(
         new = markdown_list(result.new.iter()),
         all = markdown_list(result.all.iter())
     )
+}
+
+fn branch_check_message(
+    repo: &str,
+    branch: &str,
+    _settings: &BranchSettings,
+    result: &BranchCheckResult,
+) -> String {
+    let status = if result.old == result.new {
+        format!(
+            "{}
+\\(not changed\\)
+",
+            markdown_optional_commit(result.new.as_deref())
+        )
+    } else {
+        format!(
+            "{old} \u{2192}
+{new}
+",
+            old = markdown_optional_commit(result.old.as_deref()),
+            new = markdown_optional_commit(result.new.as_deref()),
+        )
+    };
+    format!(
+        "{repo}/`{branch}`
+{status}
+",
+        repo = markdown::escape(repo),
+        branch = markdown::escape(branch),
+        status = status
+    )
+}
+
+fn markdown_optional_commit(commit: Option<&str>) -> String {
+    match &commit {
+        None => "\\(nothing\\)".to_owned(),
+        Some(c) => markdown::code_inline(&markdown::escape(c)),
+    }
 }
 
 fn markdown_list<Iter, T>(s: Iter) -> String
