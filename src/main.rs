@@ -250,12 +250,22 @@ async fn list(cx: &UpdateWithCx<AutoSend<Bot>, Message>) -> Result<(), CommandEr
         .lock()?
         .ok_or(error::Error::AnotherTaskRunning(repo))?;
         let resources = lock.resources.lock().unwrap();
+
+        result.push_str("  commits:\n");
         let commits = &resources.settings.commits;
         if commits.is_empty() {
-            result.push_str("(nothing)\n");
+            result.push_str("  (nothing)\n");
         }
         for (commit, settings) in commits {
-            result.push_str(&format!("- {}\n   {}\n", commit, settings.comment));
+            result.push_str(&format!("  - {}\n    {}\n", commit, settings.comment));
+        }
+        result.push_str("  branches:\n");
+        let branches = &resources.settings.branches;
+        if branches.is_empty() {
+            result.push_str("  (nothing)\n");
+        }
+        for (branch, _settings) in branches {
+            result.push_str(&format!("  - {}\n", branch));
         }
 
         result.push('\n');
