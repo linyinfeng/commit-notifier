@@ -63,7 +63,7 @@ impl Error {
         &self,
         cx: &UpdateWithCx<AutoSend<Bot>, Message>,
     ) -> Result<(), teloxide::RequestError> {
-        log::warn!("report error to chat {}: {}", cx.chat_id(), self);
+        log::warn!("report error to chat {}: {:?}", cx.chat_id(), self);
         cx.reply_to(format!("{}", self)).await?;
 
         Ok(())
