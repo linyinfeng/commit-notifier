@@ -286,8 +286,16 @@ fn update_from_root<'repo>(
         }
 
         in_memory_cache.insert(oid, hit);
-        cache::store(cache, target, &str_commit, hit)?;
     }
+
+    // unchecked: no nested transaction
+    let tx = cache.unchecked_transaction()?;
+    for (oid, hit) in in_memory_cache {
+        let str_commit = format!("{}", oid);
+        // wrap store operations in transaction to improve performance
+        cache::store(&tx, target, &str_commit, hit)?;
+    }
+    tx.commit()?;
 
     Ok(())
 }
