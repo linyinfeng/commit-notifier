@@ -264,7 +264,7 @@ async fn list(cx: &UpdateWithCx<AutoSend<Bot>, Message>) -> Result<(), CommandEr
         if branches.is_empty() {
             result.push_str("  (nothing)\n");
         }
-        for (branch, _settings) in branches {
+        for branch in branches.keys() {
             result.push_str(&format!("  - {}\n", branch));
         }
 
