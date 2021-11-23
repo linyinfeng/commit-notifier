@@ -1,6 +1,5 @@
-use std::collections::BTreeSet;
 use std::fmt;
-use std::fs::{File, OpenOptions};
+use std::fs::{create_dir, remove_file, File, OpenOptions};
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -16,9 +15,6 @@ use super::settings::Settings;
 use crate::cache;
 use crate::error::Error;
 
-static TASKS: once_cell::sync::Lazy<Mutex<BTreeSet<Task>>> =
-    once_cell::sync::Lazy::new(|| Mutex::new(BTreeSet::new()));
-
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
 pub struct Task {
     pub chat: i64,
@@ -26,60 +22,68 @@ pub struct Task {
 }
 
 impl Task {
-    pub fn lock_bare(self) -> Option<TaskGuardBare> {
-        let mut running = TASKS.lock().unwrap();
-        if running.contains(&self) {
-            None
+    pub fn lock_bare_inner(self) -> Result<Option<TaskGuardBareInner>, Error> {
+        let paths = paths::get(self.chat, &self.repo)?;
+        if !paths.outer.is_dir() {
+            create_dir(paths.outer)?;
+        }
+        if !paths.lock_outer.is_dir() {
+            create_dir(paths.lock_outer)?;
+        }
+        if paths.lock.is_file() {
+            // already locked
+            Ok(None)
         } else {
-            log::debug!("bare task locked: {:?}", self);
-            running.insert(self.clone());
-            Some(Arc::new(TaskGuardBareInner { task: self }))
+            File::create(paths.lock)?;
+            log::debug!("task unlocked: {:?}", self);
+            Ok(Some(TaskGuardBareInner { task: self }))
         }
     }
 
+    pub fn lock_bare(self) -> Result<Option<TaskGuardBare>, Error> {
+        self.lock_bare_inner().map(|o| o.map(Arc::new))
+    }
+
+    pub fn lock_inner(self) -> Result<Option<TaskGuardInner>, Error> {
+        self.lock_bare_inner().and_then(|o| match o {
+            None => Ok(None),
+            Some(bare) => {
+                let paths = paths::get(bare.chat(), bare.repo_name())?;
+
+                if !paths.outer.is_dir() {
+                    return Err(Error::UnknownRepository(bare.repo_name().to_owned()));
+                }
+
+                // load repo
+                let repo = Repository::open(&paths.repo)?;
+                // load cache
+                let cache_exists = paths.cache.is_file();
+                let cache = Connection::open(&paths.cache)?;
+                if !cache_exists {
+                    cache::initialize(&cache)?;
+                }
+                // load settings
+                let settings = read_json(&paths.settings)?;
+                // load results
+                let results = read_json(&paths.results)?;
+
+                let resources = Resources {
+                    repo,
+                    cache,
+                    settings,
+                    results,
+                };
+
+                Ok(Some(TaskGuardInner {
+                    bare,
+                    resources: Mutex::new(resources),
+                }))
+            }
+        })
+    }
+
     pub fn lock(self) -> Result<Option<TaskGuard>, Error> {
-        let mut running = TASKS.lock().unwrap();
-        if running.contains(&self) {
-            Ok(None)
-        } else {
-            log::debug!("task locked: {:?}", self);
-
-            let paths = paths::get(self.chat, &self.repo)?;
-
-            if !paths.outer.is_dir() {
-                return Err(Error::UnknownRepository(self.repo));
-            }
-
-            // load repo
-            let repo = Repository::open(&paths.repo)?;
-            // load cache
-            let cache_exists = paths.cache.is_file();
-            let cache = Connection::open(&paths.cache)?;
-            if !cache_exists {
-                cache::initialize(&cache)?;
-            }
-            // load settings
-            let settings = read_json(&paths.settings)?;
-            // load results
-            let results = read_json(&paths.results)?;
-
-            let resources = Resources {
-                repo,
-                cache,
-                settings,
-                results,
-            };
-
-            let guard_inner = TaskGuardInner {
-                task: self.clone(),
-                resources: Mutex::new(resources),
-            };
-            let result = Ok(Some(Arc::new(guard_inner)));
-
-            // finally, perform the real lock action
-            running.insert(self);
-            result
-        }
+        self.lock_inner().map(|o| o.map(Arc::new))
     }
 }
 
@@ -91,7 +95,7 @@ pub struct Resources {
 }
 
 pub struct TaskGuardInner {
-    pub task: Task,
+    pub bare: TaskGuardBareInner,
     pub resources: Mutex<Resources>,
 }
 
@@ -118,9 +122,15 @@ pub trait TaskRef {
     }
 }
 
+impl TaskRef for Task {
+    fn task(&self) -> &Task {
+        self
+    }
+}
+
 impl TaskRef for TaskGuardInner {
     fn task(&self) -> &Task {
-        &self.task
+        &self.bare.task
     }
 }
 
@@ -140,21 +150,21 @@ impl TaskGuardInner {
     }
 }
 
-impl Drop for TaskGuardInner {
-    fn drop(&mut self) {
-        let mut running = TASKS.lock().unwrap();
-        let removed = running.remove(&self.task);
-        assert!(removed);
-        log::debug!("task unlocked: {:?}", self.task);
-    }
-}
-
 impl Drop for TaskGuardBareInner {
     fn drop(&mut self) {
-        let mut running = TASKS.lock().unwrap();
-        let removed = running.remove(&self.task);
-        assert!(removed);
-        log::debug!("bare task unlocked: {:?}", self.task);
+        let result = || -> Result<(), Error> {
+            let paths = paths::get(self.chat(), self.repo_name())?;
+            if !paths.lock.is_file() {
+                log::error!("task already unlocked: {:?}", self.task());
+            } else {
+                remove_file(paths.lock)?;
+                log::debug!("task unlocked: {:?}", self.task());
+            }
+            Ok(())
+        }();
+        if let Err(e) = result {
+            log::error!("failed to unlock task {:?}: {:?}", self.task(), e);
+        };
     }
 }
 

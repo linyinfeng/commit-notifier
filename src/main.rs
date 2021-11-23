@@ -364,7 +364,7 @@ fn prepare_lock_bare(
         chat,
         repo: repo.to_owned(),
     };
-    match task.lock_bare() {
+    match task.lock_bare()? {
         Some(lock) => Ok(lock),
         None => {
             log::info!("ignored command from {} on '{}'", chat, repo);

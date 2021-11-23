@@ -8,6 +8,8 @@ use std::fs;
 
 pub struct Paths {
     pub outer: PathBuf,
+    pub lock: PathBuf,
+    pub lock_outer: PathBuf,
     pub repo: PathBuf,
     pub cache: PathBuf,
     pub settings: PathBuf,
@@ -33,8 +35,11 @@ pub fn get(chat: i64, repo: &str) -> Result<Paths, Error> {
         Err(Error::NotInAllowList(chat))
     } else {
         let outer_dir = chat_working_dir.join(repo);
+        let lock_outer = outer_dir.join("lock");
         Ok(Paths {
             outer: outer_dir.clone(),
+            lock_outer: lock_outer.clone(),
+            lock: lock_outer.join("locked"),
             repo: outer_dir.join("repo"),
             cache: outer_dir.join("cache.sqlite"),
             settings: outer_dir.join("settings.json"),

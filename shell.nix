@@ -3,6 +3,7 @@
 pkgs.mkShell {
   packages = with pkgs; [
     rustup
+    rust-analyzer
 
     pkg-config
     sqlite
