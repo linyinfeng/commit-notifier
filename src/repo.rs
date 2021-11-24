@@ -142,79 +142,90 @@ pub async fn commit_check(
     task: TaskGuard,
     target_commit: &str,
 ) -> Result<CommitCheckResult, Error> {
+    let id = target_commit;
     let target_commit = target_commit.to_owned();
-    spawn_blocking(move || {
-        let result = {
-            let mut guard = task.resources.lock().unwrap();
-            let resources = guard.deref_mut();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let worker = spawn_blocking(move || {
+        let builder = || {
+            let result = {
+                let mut guard = task.resources.lock().unwrap();
+                let resources = guard.deref_mut();
 
-            let mut branches_hit = BTreeSet::new();
+                let mut branches_hit = BTreeSet::new();
 
-            let results = &mut resources.results;
+                let results = &mut resources.results;
 
-            // save old results
-            let old_commit_results = match results.commits.remove(&target_commit) {
-                Some(bs) => bs,
-                None => Default::default(), // create default result
-            };
-            let branches_hit_old = old_commit_results.branches;
-
-            let repo = &resources.repo;
-            let branches = repo.branches(Some(git2::BranchType::Remote))?;
-            let branch_regex = Regex::new(&resources.settings.branch_regex)?;
-            for branch_iter_res in branches {
-                let (branch, _) = branch_iter_res?;
-                // clean up name
-                let branch_name = match branch.name()?.and_then(branch_name_map_filter) {
-                    None => continue,
-                    Some(n) => n,
+                // save old results
+                let old_commit_results = match results.commits.remove(&target_commit) {
+                    Some(bs) => bs,
+                    None => Default::default(), // create default result
                 };
-                // skip if not match
-                if !branch_regex.is_match(branch_name) {
-                    continue;
+                let branches_hit_old = old_commit_results.branches;
+
+                let repo = &resources.repo;
+                let branches = repo.branches(Some(git2::BranchType::Remote))?;
+                let branch_regex = Regex::new(&resources.settings.branch_regex)?;
+                for branch_iter_res in branches {
+                    let (branch, _) = branch_iter_res?;
+                    // clean up name
+                    let branch_name = match branch.name()?.and_then(branch_name_map_filter) {
+                        None => continue,
+                        Some(n) => n,
+                    };
+                    // skip if not match
+                    if !branch_regex.is_match(branch_name) {
+                        continue;
+                    }
+                    let root = branch.get().peel_to_commit()?;
+                    let str_root = format!("{}", root.id());
+
+                    // build the cache
+                    update_from_root(&resources.cache, &target_commit, repo, root)?;
+
+                    // query result from cache
+                    let hit_in_branch = cache::query(&resources.cache, &target_commit, &str_root)?
+                        .expect("update_from_root should build cache");
+                    if hit_in_branch {
+                        branches_hit.insert(branch_name.to_owned());
+                    }
                 }
-                let root = branch.get().peel_to_commit()?;
-                let str_root = format!("{}", root.id());
 
-                // build the cache
-                update_from_root(&resources.cache, &target_commit, repo, root)?;
+                // insert new results
+                results.commits.insert(
+                    target_commit.clone(),
+                    CommitResults {
+                        branches: branches_hit.clone(),
+                    },
+                );
+                log::info!(
+                    "finished updating for commit {} on {}",
+                    target_commit,
+                    task.repo_name()
+                );
 
-                // query result from cache
-                let hit_in_branch = cache::query(&resources.cache, &target_commit, &str_root)?
-                    .expect("update_from_root should build cache");
-                if hit_in_branch {
-                    branches_hit.insert(branch_name.to_owned());
+                // construct final check results
+                let branches_hit_diff = branches_hit
+                    .difference(&branches_hit_old)
+                    .cloned()
+                    .collect();
+                CommitCheckResult {
+                    all: branches_hit,
+                    new: branches_hit_diff,
                 }
-            }
-
-            // insert new results
-            results.commits.insert(
-                target_commit.clone(),
-                CommitResults {
-                    branches: branches_hit.clone(),
-                },
-            );
-            log::info!(
-                "finished updating for commit {} on {}",
-                target_commit,
-                task.repo_name()
-            );
-
-            // construct final check results
-            let branches_hit_diff = branches_hit
-                .difference(&branches_hit_old)
-                .cloned()
-                .collect();
-            CommitCheckResult {
-                all: branches_hit,
-                new: branches_hit_diff,
-            }
+            };
+            // release the lock and save result
+            task.save_resources()?;
+            Ok(result)
         };
-        // release the lock and save result
-        task.save_resources()?;
-        Ok(result)
-    })
-    .await?
+        let result = builder();
+        tx.send(result).expect("borken channel");
+        log::warn!("{}: return", target_commit);
+    });
+    let result = rx.await.expect("broken channel");
+    log::warn!("{} wait for worker", id);
+    worker.await?;
+    log::warn!("{} worker ended", id);
+    result
 }
 
 fn branch_name_map_filter(name: &str) -> Option<&str> {
