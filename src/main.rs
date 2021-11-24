@@ -381,6 +381,7 @@ async fn commit_check(
     };
     let result = repo::commit_check(lock, &hash).await?;
     let reply = commit_check_message(&repo, &hash, &commit_settings, &result);
+    log::warn!("about to send THE message");
     cx.reply_to(reply).parse_mode(ParseMode::MarkdownV2).await?;
 
     Ok(())
