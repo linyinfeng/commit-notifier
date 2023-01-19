@@ -12,55 +12,55 @@ use std::{ffi::OsString, iter};
             no_binary_name = true,
 )]
 pub enum Notifier {
-    // #[subcommand(about = "add a repository")]
+    #[command(about = "add a repository")]
     RepoAdd {
         name: String,
         #[structopt(long, short)]
         url: String,
     },
-    // #[structopt(about = "edit settings of a repository")]
+    #[command(about = "edit settings of a repository")]
     RepoEdit {
         name: String,
         #[arg(long, short)]
         branch_regex: Option<String>,
     },
-    // #[structopt(about = "remove a repository")]
+    #[command(about = "remove a repository")]
     RepoRemove {
         name: String,
     },
-    // #[structopt(about = "add a commit")]
+    #[command(about = "add a commit")]
     CommitAdd {
         repo: String,
         hash: String,
         #[structopt(long, short)]
         comment: String,
     },
-    // #[structopt(about = "remove a commit")]
+    #[command(about = "remove a commit")]
     CommitRemove {
         repo: String,
         hash: String,
     },
-    // #[structopt(about = "fire a commit check immediately")]
+    #[command(about = "fire a commit check immediately")]
     CommitCheck {
         repo: String,
         hash: String,
     },
-    // #[structopt(about = "add a branch")]
+    #[command(about = "add a branch")]
     BranchAdd {
         repo: String,
         branch: String,
     },
-    // #[structopt(about = "remove a branch")]
+    #[command(about = "remove a branch")]
     BranchRemove {
         repo: String,
         branch: String,
     },
-    // #[structopt(about = "fire a branch check immediately")]
+    #[command(about = "fire a branch check immediately")]
     BranchCheck {
         repo: String,
         branch: String,
     },
-    // #[structopt(about = "list repositories and commits")]
+    #[command(about = "list repositories and commits")]
     List,
 }
 
