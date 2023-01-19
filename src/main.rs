@@ -12,6 +12,7 @@ use chrono::Utc;
 use cron::Schedule;
 use regex::Regex;
 use repo::settings::BranchSettings;
+use repo::settings::CommitSettings;
 use repo::tasks::Task;
 use repo::tasks::TaskGuard;
 use repo::tasks::TaskGuardBare;
@@ -21,7 +22,6 @@ use teloxide::types::ParseMode;
 use teloxide::utils::command::BotCommands;
 use teloxide::utils::markdown;
 use tokio::time::sleep;
-use repo::settings::CommitSettings;
 use utils::reply_to_msg;
 
 #[derive(BotCommands, Clone)]
@@ -31,11 +31,7 @@ enum BCommand {
     Notifier(String),
 }
 
-async fn answer(
-    bot: Bot,
-    msg: Message,
-    bc: BCommand,
-) -> ResponseResult<()> {
+async fn answer(bot: Bot, msg: Message, bc: BCommand) -> ResponseResult<()> {
     let BCommand::Notifier(input) = bc;
     let result = match command::parse(input) {
         Ok(command) => {
@@ -51,9 +47,15 @@ async fn answer(
                     hash,
                     comment,
                 } => commit_add(bot, msg, repo, hash, comment).await,
-                command::Notifier::CommitRemove { repo, hash } => commit_remove(bot, msg, repo, hash).await,
-                command::Notifier::CommitCheck { repo, hash } => commit_check(bot, msg, repo, hash).await,
-                command::Notifier::BranchAdd { repo, branch } => branch_add(bot, msg, repo, branch).await,
+                command::Notifier::CommitRemove { repo, hash } => {
+                    commit_remove(bot, msg, repo, hash).await
+                }
+                command::Notifier::CommitCheck { repo, hash } => {
+                    commit_check(bot, msg, repo, hash).await
+                }
+                command::Notifier::BranchAdd { repo, branch } => {
+                    branch_add(bot, msg, repo, branch).await
+                }
                 command::Notifier::BranchRemove { repo, branch } => {
                     branch_remove(bot, msg, repo, branch).await
                 }
@@ -62,7 +64,7 @@ async fn answer(
                 }
                 command::Notifier::List => list(bot, msg).await,
             }
-        },
+        }
         Err(e) => Err(e.into()),
     };
     match result {
@@ -280,12 +282,7 @@ async fn list(bot: Bot, msg: Message) -> Result<(), CommandError> {
     Ok(())
 }
 
-async fn repo_add(
-    bot: Bot,
-    msg: Message,
-    name: String,
-    url: String,
-) -> Result<(), CommandError> {
+async fn repo_add(bot: Bot, msg: Message, name: String, url: String) -> Result<(), CommandError> {
     let chat = msg.chat.id;
     let lock = prepare_lock_bare(chat, &name)?;
     if repo::exists(chat, &name)? {
@@ -295,9 +292,12 @@ async fn repo_add(
     let output = repo::create(lock, &url).await?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    reply_to_msg(&bot, &msg, format!(
-        "repository '{name}' added\nstdout:\n{stdout}\nstderr:\n{stderr}"
-    )).await?;
+    reply_to_msg(
+        &bot,
+        &msg,
+        format!("repository '{name}' added\nstdout:\n{stdout}\nstderr:\n{stderr}"),
+    )
+    .await?;
     Ok(())
 }
 
@@ -318,17 +318,16 @@ async fn repo_edit(
         resources.settings.clone()
     };
     lock.save_resources()?;
-    reply_to_msg(&bot, &msg, format!(
-        "repository '{name}' edited, current settings:\n{current_settings:#?}"
-    )).await?;
+    reply_to_msg(
+        &bot,
+        &msg,
+        format!("repository '{name}' edited, current settings:\n{current_settings:#?}"),
+    )
+    .await?;
     Ok(())
 }
 
-async fn repo_remove(
-    bot: Bot,
-    msg: Message,
-    name: String,
-) -> Result<(), CommandError> {
+async fn repo_remove(bot: Bot, msg: Message, name: String) -> Result<(), CommandError> {
     let chat = msg.chat.id;
     let lock = prepare_lock_bare(chat, &name)?;
     if !repo::exists(chat, &name)? {
@@ -384,7 +383,9 @@ async fn commit_check(
     };
     let result = repo::commit_check(lock, &hash).await?;
     let reply = commit_check_message(&repo, &hash, &commit_settings, &result);
-    reply_to_msg(&bot, &msg, reply).parse_mode(ParseMode::MarkdownV2).await?;
+    reply_to_msg(&bot, &msg, reply)
+        .parse_mode(ParseMode::MarkdownV2)
+        .await?;
 
     Ok(())
 }
@@ -432,15 +433,14 @@ async fn branch_check(
     };
     let result = repo::branch_check(lock, &branch).await?;
     let reply = branch_check_message(&repo, &branch, &branch_settings, &result);
-    reply_to_msg(&bot, &msg, reply).parse_mode(ParseMode::MarkdownV2).await?;
+    reply_to_msg(&bot, &msg, reply)
+        .parse_mode(ParseMode::MarkdownV2)
+        .await?;
 
     Ok(())
 }
 
-fn prepare_lock(
-    chat: ChatId,
-    repo: &str,
-) -> Result<TaskGuard, error::Error> {
+fn prepare_lock(chat: ChatId, repo: &str) -> Result<TaskGuard, error::Error> {
     let task = repo::tasks::Task {
         chat,
         repo: repo.to_owned(),
@@ -458,10 +458,7 @@ fn prepare_lock(
     }
 }
 
-fn prepare_lock_bare(
-    chat: ChatId,
-    repo: &str,
-) -> Result<TaskGuardBare, error::Error> {
+fn prepare_lock_bare(chat: ChatId, repo: &str) -> Result<TaskGuardBare, error::Error> {
     let task = repo::tasks::Task {
         chat,
         repo: repo.to_owned(),

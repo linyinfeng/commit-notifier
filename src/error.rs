@@ -63,11 +63,7 @@ pub enum Error {
 }
 
 impl Error {
-    pub async fn report(
-        &self,
-        bot: &Bot,
-        msg: &Message,
-    ) -> Result<(), teloxide::RequestError>{
+    pub async fn report(&self, bot: &Bot, msg: &Message) -> Result<(), teloxide::RequestError> {
         log::warn!("report error to chat {}: {:?}", msg.chat.id, self);
         bot.send_message(msg.chat.id, format!("{self}"))
             .reply_to_message_id(msg.id)

@@ -6,11 +6,11 @@ pub mod tasks;
 use git2::{BranchType, Commit, Oid, Repository};
 use regex::Regex;
 use rusqlite::Connection;
-use teloxide::types::ChatId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::ops::DerefMut;
 use std::process::{Command, Output};
+use teloxide::types::ChatId;
 use tokio::task::{self, spawn_blocking};
 
 use crate::cache;

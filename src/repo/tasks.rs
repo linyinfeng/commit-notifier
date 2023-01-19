@@ -4,11 +4,11 @@ use std::io::{BufReader, BufWriter};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use fs4::FileExt;
 use git2::Repository;
 use rusqlite::Connection;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use fs4::FileExt;
 use teloxide::types::ChatId;
 
 use super::paths;
@@ -52,8 +52,11 @@ impl Task {
         match f.try_lock_exclusive() {
             Ok(()) => {
                 log::debug!("task locked: {:?}", self);
-                Ok(Some(TaskGuardBareInner { task: self, lock_file: f }))
-            },
+                Ok(Some(TaskGuardBareInner {
+                    task: self,
+                    lock_file: f,
+                }))
+            }
             Err(e) => {
                 log::debug!("failed to lock task: {e}");
                 Ok(None)

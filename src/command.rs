@@ -1,7 +1,7 @@
 use crate::error::Error;
-use std::{ffi::OsString, iter};
-use clap::Parser;
 use clap::ColorChoice;
+use clap::Parser;
+use std::{ffi::OsString, iter};
 
 #[derive(Debug, Parser)]
 #[command(name = "/notifier",
@@ -25,7 +25,9 @@ pub enum Notifier {
         branch_regex: Option<String>,
     },
     // #[structopt(about = "remove a repository")]
-    RepoRemove { name: String },
+    RepoRemove {
+        name: String,
+    },
     // #[structopt(about = "add a commit")]
     CommitAdd {
         repo: String,
@@ -34,15 +36,30 @@ pub enum Notifier {
         comment: String,
     },
     // #[structopt(about = "remove a commit")]
-    CommitRemove { repo: String, hash: String },
+    CommitRemove {
+        repo: String,
+        hash: String,
+    },
     // #[structopt(about = "fire a commit check immediately")]
-    CommitCheck { repo: String, hash: String },
+    CommitCheck {
+        repo: String,
+        hash: String,
+    },
     // #[structopt(about = "add a branch")]
-    BranchAdd { repo: String, branch: String },
+    BranchAdd {
+        repo: String,
+        branch: String,
+    },
     // #[structopt(about = "remove a branch")]
-    BranchRemove { repo: String, branch: String },
+    BranchRemove {
+        repo: String,
+        branch: String,
+    },
     // #[structopt(about = "fire a branch check immediately")]
-    BranchCheck { repo: String, branch: String },
+    BranchCheck {
+        repo: String,
+        branch: String,
+    },
     // #[structopt(about = "list repositories and commits")]
     List,
 }

@@ -1,7 +1,7 @@
 use regex::Regex;
-use teloxide::types::ChatId;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use teloxide::types::ChatId;
 
 use crate::error::Error;
 use crate::options;
