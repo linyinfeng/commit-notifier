@@ -1,20 +1,30 @@
 use std::path::PathBuf;
-use structopt::StructOpt;
+use clap::Parser;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
+#[command(author, version, about, long_about = None)]
 pub struct Options {
-    #[structopt(short, long, parse(from_os_str))]
     pub working_dir: PathBuf,
-    #[structopt(short, long)]
     pub cron: String,
 }
 
 pub static OPTIONS: once_cell::sync::OnceCell<Options> = once_cell::sync::OnceCell::new();
 
 pub fn initialize() {
-    once_cell::sync::OnceCell::set(&OPTIONS, Options::from_args()).unwrap();
+    once_cell::sync::OnceCell::set(&OPTIONS, Options::parse()).unwrap();
 }
 
 pub fn get() -> &'static Options {
     OPTIONS.get().expect("options not initialized")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verify_cli() {
+        use clap::CommandFactory;
+        Options::command().debug_assert()
+    }
 }

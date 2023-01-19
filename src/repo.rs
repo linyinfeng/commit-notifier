@@ -6,6 +6,7 @@ pub mod tasks;
 use git2::{BranchType, Commit, Oid, Repository};
 use regex::Regex;
 use rusqlite::Connection;
+use teloxide::types::ChatId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::ops::DerefMut;
@@ -88,7 +89,7 @@ pub async fn fetch(task: TaskGuard) -> Result<Output, Error> {
     Ok(output)
 }
 
-pub fn exists(chat: i64, name: &str) -> Result<bool, Error> {
+pub fn exists(chat: ChatId, name: &str) -> Result<bool, Error> {
     let path = paths::get(chat, name)?.repo;
     Ok(path.is_dir())
 }

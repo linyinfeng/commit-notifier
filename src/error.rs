@@ -22,7 +22,7 @@ pub enum Error {
     #[error("invalid name: {0}")]
     Name(String),
     #[error("chat id {0} is not in allow list")]
-    NotInAllowList(i64),
+    NotInAllowList(ChatId),
     #[error("git error: {0}")]
     Git(#[from] git2::Error),
     #[error("failed to clone git repository '{url}' into '{name}', output: {output:?}")]
@@ -65,11 +65,13 @@ pub enum Error {
 impl Error {
     pub async fn report(
         &self,
-        cx: &UpdateWithCx<AutoSend<Bot>, Message>,
-    ) -> Result<(), teloxide::RequestError> {
-        log::warn!("report error to chat {}: {:?}", cx.chat_id(), self);
-        cx.reply_to(format!("{}", self)).await?;
-
+        bot: &Bot,
+        msg: &Message,
+    ) -> Result<(), teloxide::RequestError>{
+        log::warn!("report error to chat {}: {:?}", msg.chat.id, self);
+        bot.send_message(msg.chat.id, format!("{}", self))
+            .reply_to_message_id(msg.id)
+            .await?;
         Ok(())
     }
 }

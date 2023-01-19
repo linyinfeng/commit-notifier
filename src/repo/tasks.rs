@@ -1,5 +1,5 @@
 use std::fmt;
-use std::fs::{create_dir, remove_file, File, OpenOptions};
+use std::fs::{create_dir, File, OpenOptions};
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -8,6 +8,8 @@ use git2::Repository;
 use rusqlite::Connection;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use fs4::FileExt;
+use teloxide::types::ChatId;
 
 use super::paths;
 use super::results::Results;
@@ -17,37 +19,52 @@ use crate::error::Error;
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
 pub struct Task {
-    pub chat: i64,
+    pub chat: ChatId,
     pub repo: String,
 }
 
 impl Task {
-    pub fn lock_bare_inner(self) -> Result<Option<TaskGuardBareInner>, Error> {
+    // TODO: add lock and lock_bare
+
+    // try lock and acquire all resources related to the task
+    pub fn lock(self) -> Result<Option<TaskGuard>, Error> {
+        self.try_lock_inner().map(|o| o.map(Arc::new))
+    }
+
+    // try lock only
+    pub fn try_lock_bare(self) -> Result<Option<TaskGuardBare>, Error> {
+        self.try_lock_bare_inner().map(|o| o.map(Arc::new))
+    }
+
+    pub fn ensure_lock_file(&self) -> Result<File, Error> {
         let paths = paths::get(self.chat, &self.repo)?;
         if !paths.outer.is_dir() {
             create_dir(paths.outer)?;
         }
-        if !paths.lock_outer.is_dir() {
-            create_dir(paths.lock_outer)?;
+        if !paths.lock.is_file() {
+            File::create(&paths.lock)?;
         }
-        if paths.lock.is_file() {
-            // already locked
-            Ok(None)
-        } else {
-            File::create(paths.lock)?;
-            log::debug!("task unlocked: {:?}", self);
-            Ok(Some(TaskGuardBareInner { task: self }))
+        Ok(File::open(&paths.lock)?)
+    }
+
+    pub fn try_lock_bare_inner(self) -> Result<Option<TaskGuardBareInner>, Error> {
+        let f = self.ensure_lock_file()?;
+        match f.try_lock_exclusive() {
+            Ok(()) => {
+                log::debug!("task locked: {:?}", self);
+                Ok(Some(TaskGuardBareInner { task: self, lock_file: f }))
+            },
+            Err(e) => {
+                log::debug!("failed to lock task: {e}");
+                Ok(None)
+            }
         }
     }
 
-    pub fn lock_bare(self) -> Result<Option<TaskGuardBare>, Error> {
-        self.lock_bare_inner().map(|o| o.map(Arc::new))
-    }
-
-    pub fn lock_inner(self) -> Result<Option<TaskGuardInner>, Error> {
-        self.lock_bare_inner().and_then(|o| match o {
-            None => Ok(None),
-            Some(bare) => {
+    pub fn try_lock_inner(self) -> Result<Option<TaskGuardInner>, Error> {
+        match self.try_lock_bare_inner() {
+            Ok(None) => Ok(None),
+            Ok(Some(bare)) => {
                 let paths = paths::get(bare.chat(), bare.repo_name())?;
 
                 if !paths.outer.is_dir() {
@@ -79,11 +96,8 @@ impl Task {
                     resources: Mutex::new(resources),
                 }))
             }
-        })
-    }
-
-    pub fn lock(self) -> Result<Option<TaskGuard>, Error> {
-        self.lock_inner().map(|o| o.map(Arc::new))
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -101,6 +115,7 @@ pub struct TaskGuardInner {
 
 pub struct TaskGuardBareInner {
     pub task: Task,
+    pub lock_file: File,
 }
 
 pub type TaskGuard = Arc<TaskGuardInner>;
@@ -108,14 +123,12 @@ pub type TaskGuardBare = Arc<TaskGuardBareInner>;
 
 pub trait TaskRef {
     fn task(&self) -> &Task;
-    fn chat(&self) -> i64 {
+    fn chat(&self) -> ChatId {
         self.task().chat
     }
-
     fn repo_name(&self) -> &str {
         &self.task().repo
     }
-
     fn paths(&self) -> Result<paths::Paths, Error> {
         let t = self.task();
         paths::get(t.chat, &t.repo)
@@ -152,16 +165,7 @@ impl TaskGuardInner {
 
 impl Drop for TaskGuardBareInner {
     fn drop(&mut self) {
-        let result = || -> Result<(), Error> {
-            let paths = paths::get(self.chat(), self.repo_name())?;
-            if !paths.lock.is_file() {
-                log::error!("task already unlocked: {:?}", self.task());
-            } else {
-                remove_file(paths.lock)?;
-                log::debug!("task unlocked: {:?}", self.task());
-            }
-            Ok(())
-        }();
+        let result = self.lock_file.unlock();
         if let Err(e) = result {
             log::error!("failed to unlock task {:?}: {:?}", self.task(), e);
         };

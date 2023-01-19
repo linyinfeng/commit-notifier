@@ -1,56 +1,55 @@
 use crate::error::Error;
 use std::{ffi::OsString, iter};
-use structopt::StructOpt;
+use clap::Parser;
+use clap::ColorChoice;
 
-#[derive(Debug, StructOpt)]
-#[structopt(name = "/notifier",
-            author = clap::crate_authors!(),
-            version = clap::crate_version!(),
-            about = clap::crate_description!(),
-            global_settings = &[
-                clap::AppSettings::ColorNever,
-                clap::AppSettings::NoBinaryName,
-            ],
+#[derive(Debug, Parser)]
+#[command(name = "/notifier",
+            author,
+            version,
+            about,
+            color = ColorChoice::Never,
+            no_binary_name = true,
 )]
 pub enum Notifier {
-    #[structopt(about = "add a repository")]
+    // #[subcommand(about = "add a repository")]
     RepoAdd {
         name: String,
         #[structopt(long, short)]
         url: String,
     },
-    #[structopt(about = "edit settings of a repository")]
+    // #[structopt(about = "edit settings of a repository")]
     RepoEdit {
         name: String,
-        #[structopt(long, short)]
+        #[arg(long, short)]
         branch_regex: Option<String>,
     },
-    #[structopt(about = "remove a repository")]
+    // #[structopt(about = "remove a repository")]
     RepoRemove { name: String },
-    #[structopt(about = "add a commit")]
+    // #[structopt(about = "add a commit")]
     CommitAdd {
         repo: String,
         hash: String,
         #[structopt(long, short)]
         comment: String,
     },
-    #[structopt(about = "remove a commit")]
+    // #[structopt(about = "remove a commit")]
     CommitRemove { repo: String, hash: String },
-    #[structopt(about = "fire a commit check immediately")]
+    // #[structopt(about = "fire a commit check immediately")]
     CommitCheck { repo: String, hash: String },
-    #[structopt(about = "add a branch")]
+    // #[structopt(about = "add a branch")]
     BranchAdd { repo: String, branch: String },
-    #[structopt(about = "remove a branch")]
+    // #[structopt(about = "remove a branch")]
     BranchRemove { repo: String, branch: String },
-    #[structopt(about = "fire a branch check immediately")]
+    // #[structopt(about = "fire a branch check immediately")]
     BranchCheck { repo: String, branch: String },
-    #[structopt(about = "list repositories and commits")]
+    // #[structopt(about = "list repositories and commits")]
     List,
 }
 
 pub fn parse(raw_input: String) -> Result<Notifier, Error> {
     let input = parse_raw(raw_input)?.into_iter().map(OsString::from);
-    Ok(Notifier::from_iter_safe(input)?)
+    Ok(Notifier::try_parse_from(input)?)
 }
 
 #[derive(Debug)]
@@ -155,5 +154,11 @@ mod tests {
                 .map(str::to_owned)
                 .collect::<Vec::<_>>()
         );
+    }
+
+    #[test]
+    fn verify_cli() {
+        use clap::CommandFactory;
+        Notifier::command().debug_assert()
     }
 }

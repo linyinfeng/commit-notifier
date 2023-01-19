@@ -1,4 +1,5 @@
 use regex::Regex;
+use teloxide::types::ChatId;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -9,7 +10,6 @@ use std::fs;
 pub struct Paths {
     pub outer: PathBuf,
     pub lock: PathBuf,
-    pub lock_outer: PathBuf,
     pub repo: PathBuf,
     pub cache: PathBuf,
     pub settings: PathBuf,
@@ -25,21 +25,19 @@ pub struct CheckResult {
 static NAME_RE: once_cell::sync::Lazy<Regex> =
     once_cell::sync::Lazy::new(|| Regex::new("^[a-zA-Z0-9_\\-]*$").unwrap());
 
-pub fn get(chat: i64, repo: &str) -> Result<Paths, Error> {
+pub fn get(chat_id: ChatId, repo: &str) -> Result<Paths, Error> {
     if !NAME_RE.is_match(repo) {
         return Err(Error::Name(repo.to_owned()));
     }
 
-    let chat_working_dir = chat_dir(chat);
+    let chat_working_dir = chat_dir(chat_id);
     if !chat_working_dir.is_dir() {
-        Err(Error::NotInAllowList(chat))
+        Err(Error::NotInAllowList(chat_id))
     } else {
         let outer_dir = chat_working_dir.join(repo);
-        let lock_outer = outer_dir.join("lock");
         Ok(Paths {
             outer: outer_dir.clone(),
-            lock_outer: lock_outer.clone(),
-            lock: lock_outer.join("locked"),
+            lock: outer_dir.join("lock"),
             repo: outer_dir.join("repo"),
             cache: outer_dir.join("cache.sqlite"),
             settings: outer_dir.join("settings.json"),
@@ -48,17 +46,18 @@ pub fn get(chat: i64, repo: &str) -> Result<Paths, Error> {
     }
 }
 
-fn chat_dir(chat: i64) -> PathBuf {
+fn chat_dir(chat: ChatId) -> PathBuf {
+    let ChatId(num) = chat;
     let working_dir = &options::get().working_dir;
-    let chat_dir_name = if chat < 0 {
-        format!("_{}", chat.unsigned_abs())
+    let chat_dir_name = if num < 0 {
+        format!("_{}", num.unsigned_abs())
     } else {
         format!("{}", chat)
     };
     working_dir.join(chat_dir_name)
 }
 
-pub fn chats() -> Result<BTreeSet<i64>, Error> {
+pub fn chats() -> Result<BTreeSet<ChatId>, Error> {
     let mut chats = BTreeSet::new();
     let working_dir = &options::get().working_dir;
     let dirs = fs::read_dir(working_dir)?;
@@ -75,15 +74,15 @@ pub fn chats() -> Result<BTreeSet<i64>, Error> {
         let name_vec: Vec<_> = name.chars().collect();
         if name_vec[0] == '_' {
             let n: i64 = name_vec[1..].iter().collect::<String>().parse()?;
-            chats.insert(-n);
+            chats.insert(ChatId(-n));
         } else {
-            chats.insert(name.parse()?);
+            chats.insert(ChatId(name.parse()?));
         }
     }
     Ok(chats)
 }
 
-pub fn repos(chat: i64) -> Result<BTreeSet<String>, Error> {
+pub fn repos(chat: ChatId) -> Result<BTreeSet<String>, Error> {
     let mut repos = BTreeSet::new();
 
     let chat_working_dir = chat_dir(chat);

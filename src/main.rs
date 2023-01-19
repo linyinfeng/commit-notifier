@@ -3,6 +3,7 @@ mod command;
 mod error;
 mod options;
 mod repo;
+mod utils;
 
 use std::fmt;
 use std::str::FromStr;
@@ -16,48 +17,51 @@ use repo::tasks::TaskGuard;
 use repo::tasks::TaskGuardBare;
 use repo::BranchCheckResult;
 use teloxide::prelude::*;
-use teloxide::types::Me;
 use teloxide::types::ParseMode;
-use teloxide::utils::command::BotCommand;
+use teloxide::utils::command::BotCommands;
 use teloxide::utils::markdown;
 use tokio::time::sleep;
+use repo::settings::CommitSettings;
+use utils::reply_to_msg;
 
-use crate::repo::settings::CommitSettings;
-
-#[derive(BotCommand)]
-#[command(rename = "lowercase", description = "Supported commands:")]
+#[derive(BotCommands, Clone)]
+#[command(rename_rule = "lowercase", description = "Supported commands:")]
 enum BCommand {
     #[command(description = "main and the only command.")]
     Notifier(String),
 }
 
 async fn answer(
-    cx: UpdateWithCx<AutoSend<Bot>, Message>,
+    bot: Bot,
+    msg: Message,
     bc: BCommand,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> ResponseResult<()> {
     let BCommand::Notifier(input) = bc;
     let result = match command::parse(input) {
-        Ok(command) => match command {
-            command::Notifier::RepoAdd { name, url } => repo_add(&cx, name, url).await,
-            command::Notifier::RepoEdit { name, branch_regex } => {
-                repo_edit(&cx, name, branch_regex).await
+        Ok(command) => {
+            let (bot, msg) = (bot.clone(), msg.clone());
+            match command {
+                command::Notifier::RepoAdd { name, url } => repo_add(bot, msg, name, url).await,
+                command::Notifier::RepoEdit { name, branch_regex } => {
+                    repo_edit(bot, msg, name, branch_regex).await
+                }
+                command::Notifier::RepoRemove { name } => repo_remove(bot, msg, name).await,
+                command::Notifier::CommitAdd {
+                    repo,
+                    hash,
+                    comment,
+                } => commit_add(bot, msg, repo, hash, comment).await,
+                command::Notifier::CommitRemove { repo, hash } => commit_remove(bot, msg, repo, hash).await,
+                command::Notifier::CommitCheck { repo, hash } => commit_check(bot, msg, repo, hash).await,
+                command::Notifier::BranchAdd { repo, branch } => branch_add(bot, msg, repo, branch).await,
+                command::Notifier::BranchRemove { repo, branch } => {
+                    branch_remove(bot, msg, repo, branch).await
+                }
+                command::Notifier::BranchCheck { repo, branch } => {
+                    branch_check(bot, msg, repo, branch).await
+                }
+                command::Notifier::List => list(bot, msg).await,
             }
-            command::Notifier::RepoRemove { name } => repo_remove(&cx, name).await,
-            command::Notifier::CommitAdd {
-                repo,
-                hash,
-                comment,
-            } => commit_add(&cx, repo, hash, comment).await,
-            command::Notifier::CommitRemove { repo, hash } => commit_remove(&cx, repo, hash).await,
-            command::Notifier::CommitCheck { repo, hash } => commit_check(&cx, repo, hash).await,
-            command::Notifier::BranchAdd { repo, branch } => branch_add(&cx, repo, branch).await,
-            command::Notifier::BranchRemove { repo, branch } => {
-                branch_remove(&cx, repo, branch).await
-            }
-            command::Notifier::BranchCheck { repo, branch } => {
-                branch_check(&cx, repo, branch).await
-            }
-            command::Notifier::List => list(&cx).await,
         },
         Err(e) => Err(e.into()),
     };
@@ -65,10 +69,10 @@ async fn answer(
         Ok(()) => Ok(()),
         Err(CommandError::Normal(e)) => {
             // report normal errors to user
-            e.report(&cx).await?;
+            e.report(&bot, &msg).await?;
             Ok(())
         }
-        Err(CommandError::Teloxide(e)) => Err(Box::new(e)),
+        Err(CommandError::Teloxide(e)) => Err(e),
     }
 }
 
@@ -98,17 +102,15 @@ async fn run() {
     options::initialize();
     log::info!("config = {:?}", options::get());
 
-    let bot = Bot::from_env().auto_send();
-    let Me { user: bot_user, .. } = bot.get_me().await.unwrap();
-    let bot_name = bot_user.username.expect("bots must have usernames");
+    let bot = Bot::from_env();
 
     tokio::select! {
         _ = schedule(bot.clone()) => { },
-        _ = teloxide::commands_repl(bot, bot_name, answer) => { },
+        _ = BCommand::repl(bot, answer) => { },
     }
 }
 
-async fn schedule(bot: AutoSend<Bot>) {
+async fn schedule(bot: Bot) {
     let expression = &options::get().cron;
     let schedule = Schedule::from_str(expression).expect("cron expression");
     for datetime in schedule.upcoming(Utc) {
@@ -132,7 +134,7 @@ async fn schedule(bot: AutoSend<Bot>) {
     }
 }
 
-async fn update(bot: AutoSend<Bot>) -> Result<(), teloxide::RequestError> {
+async fn update(bot: Bot) -> Result<(), teloxide::RequestError> {
     let chats = match repo::paths::chats() {
         Err(e) => {
             log::error!("failed to get chats: {}", e);
@@ -234,8 +236,8 @@ async fn update(bot: AutoSend<Bot>) -> Result<(), teloxide::RequestError> {
     Ok(())
 }
 
-async fn list(cx: &UpdateWithCx<AutoSend<Bot>, Message>) -> Result<(), CommandError> {
-    let chat = cx.chat_id();
+async fn list(bot: Bot, msg: Message) -> Result<(), CommandError> {
+    let chat = msg.chat.id;
     let mut result = String::new();
 
     let repos = repo::paths::repos(chat)?;
@@ -273,39 +275,40 @@ async fn list(cx: &UpdateWithCx<AutoSend<Bot>, Message>) -> Result<(), CommandEr
     if result.is_empty() {
         result.push_str("(nothing)\n");
     }
-    cx.reply_to(result).await?;
+    reply_to_msg(&bot, &msg, result).await?;
 
     Ok(())
 }
 
 async fn repo_add(
-    cx: &UpdateWithCx<AutoSend<Bot>, Message>,
+    bot: Bot,
+    msg: Message,
     name: String,
     url: String,
 ) -> Result<(), CommandError> {
-    let lock = prepare_lock_bare(cx, &name)?;
-    let chat = cx.chat_id();
+    let chat = msg.chat.id;
+    let lock = prepare_lock_bare(chat, &name)?;
     if repo::exists(chat, &name)? {
         return Err(error::Error::RepoExists(name).into());
     }
-    cx.reply_to(format!("start clone into '{}'", name)).await?;
+    reply_to_msg(&bot, &msg, format!("start clone into '{}'", name)).await?;
     let output = repo::create(lock, &url).await?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    cx.reply_to(format!(
+    reply_to_msg(&bot, &msg, format!(
         "repository '{}' added\nstdout:\n{}\nstderr:\n{}",
         name, stdout, stderr
-    ))
-    .await?;
+    )).await?;
     Ok(())
 }
 
 async fn repo_edit(
-    cx: &UpdateWithCx<AutoSend<Bot>, Message>,
+    bot: Bot,
+    msg: Message,
     name: String,
     branch_regex: Option<String>,
 ) -> Result<(), CommandError> {
-    let lock = prepare_lock(cx, &name)?;
+    let lock = prepare_lock(msg.chat.id, &name)?;
     let current_settings = {
         let mut resources = lock.resources.lock().unwrap();
         if let Some(r) = branch_regex {
@@ -316,59 +319,61 @@ async fn repo_edit(
         resources.settings.clone()
     };
     lock.save_resources()?;
-    cx.reply_to(format!(
+    reply_to_msg(&bot, &msg, format!(
         "repository '{}' edited, current settings:\n{:#?}",
         name, current_settings
-    ))
-    .await?;
+    )).await?;
     Ok(())
 }
 
 async fn repo_remove(
-    cx: &UpdateWithCx<AutoSend<Bot>, Message>,
+    bot: Bot,
+    msg: Message,
     name: String,
 ) -> Result<(), CommandError> {
-    let lock = prepare_lock_bare(cx, &name)?;
-    let chat = cx.chat_id();
+    let chat = msg.chat.id;
+    let lock = prepare_lock_bare(chat, &name)?;
     if !repo::exists(chat, &name)? {
         return Err(error::Error::UnknownRepository(name).into());
     }
     repo::remove(lock).await?;
-    cx.reply_to(format!("repository '{}' removed", name))
-        .await?;
+    reply_to_msg(&bot, &msg, format!("repository '{}' removed", name)).await?;
     Ok(())
 }
 
 async fn commit_add(
-    cx: &UpdateWithCx<AutoSend<Bot>, Message>,
+    bot: Bot,
+    msg: Message,
     repo: String,
     hash: String,
     comment: String,
 ) -> Result<(), CommandError> {
-    let lock = prepare_lock(cx, &repo)?;
+    let lock = prepare_lock(msg.chat.id, &repo)?;
     let settings = CommitSettings { comment };
     repo::commit_add(lock, &hash, settings).await?;
-    cx.reply_to(format!("commit {} added", hash)).await?;
-    commit_check(cx, repo, hash).await
+    reply_to_msg(&bot, &msg, format!("commit {} added", hash)).await?;
+    commit_check(bot, msg, repo, hash).await
 }
 
 async fn commit_remove(
-    cx: &UpdateWithCx<AutoSend<Bot>, Message>,
+    bot: Bot,
+    msg: Message,
     repo: String,
     hash: String,
 ) -> Result<(), CommandError> {
-    let lock = prepare_lock(cx, &repo)?;
+    let lock = prepare_lock(msg.chat.id, &repo)?;
     repo::commit_remove(lock, &hash).await?;
-    cx.reply_to(format!("commit {} removed", hash)).await?;
+    reply_to_msg(&bot, &msg, format!("commit {} removed", hash)).await?;
     Ok(())
 }
 
 async fn commit_check(
-    cx: &UpdateWithCx<AutoSend<Bot>, Message>,
+    bot: Bot,
+    msg: Message,
     repo: String,
     hash: String,
 ) -> Result<(), CommandError> {
-    let lock = prepare_lock(cx, &repo)?;
+    let lock = prepare_lock(msg.chat.id, &repo)?;
     repo::fetch(lock.clone()).await?;
     let commit_settings = {
         let resources = lock.resources.lock().unwrap();
@@ -381,39 +386,42 @@ async fn commit_check(
     };
     let result = repo::commit_check(lock, &hash).await?;
     let reply = commit_check_message(&repo, &hash, &commit_settings, &result);
-    cx.reply_to(reply).parse_mode(ParseMode::MarkdownV2).await?;
+    reply_to_msg(&bot, &msg, reply).parse_mode(ParseMode::MarkdownV2).await?;
 
     Ok(())
 }
 
 async fn branch_add(
-    cx: &UpdateWithCx<AutoSend<Bot>, Message>,
+    bot: Bot,
+    msg: Message,
     repo: String,
     branch: String,
 ) -> Result<(), CommandError> {
-    let lock = prepare_lock(cx, &repo)?;
+    let lock = prepare_lock(msg.chat.id, &repo)?;
     let settings = BranchSettings {};
     repo::branch_add(lock, &branch, settings).await?;
-    branch_check(cx, repo, branch).await
+    branch_check(bot, msg, repo, branch).await
 }
 
 async fn branch_remove(
-    cx: &UpdateWithCx<AutoSend<Bot>, Message>,
+    bot: Bot,
+    msg: Message,
     repo: String,
     branch: String,
 ) -> Result<(), CommandError> {
-    let lock = prepare_lock(cx, &repo)?;
+    let lock = prepare_lock(msg.chat.id, &repo)?;
     repo::branch_remove(lock, &branch).await?;
-    cx.reply_to(format!("branch {} removed", branch)).await?;
+    reply_to_msg(&bot, &msg, format!("branch {} removed", branch)).await?;
     Ok(())
 }
 
 async fn branch_check(
-    cx: &UpdateWithCx<AutoSend<Bot>, Message>,
+    bot: Bot,
+    msg: Message,
     repo: String,
     branch: String,
 ) -> Result<(), CommandError> {
-    let lock = prepare_lock(cx, &repo)?;
+    let lock = prepare_lock(msg.chat.id, &repo)?;
     repo::fetch(lock.clone()).await?;
     let branch_settings = {
         let resources = lock.resources.lock().unwrap();
@@ -426,16 +434,15 @@ async fn branch_check(
     };
     let result = repo::branch_check(lock, &branch).await?;
     let reply = branch_check_message(&repo, &branch, &branch_settings, &result);
-    cx.reply_to(reply).parse_mode(ParseMode::MarkdownV2).await?;
+    reply_to_msg(&bot, &msg, reply).parse_mode(ParseMode::MarkdownV2).await?;
 
     Ok(())
 }
 
 fn prepare_lock(
-    cx: &UpdateWithCx<AutoSend<Bot>, Message>,
+    chat: ChatId,
     repo: &str,
 ) -> Result<TaskGuard, error::Error> {
-    let chat = cx.chat_id();
     let task = repo::tasks::Task {
         chat,
         repo: repo.to_owned(),
@@ -454,15 +461,14 @@ fn prepare_lock(
 }
 
 fn prepare_lock_bare(
-    cx: &UpdateWithCx<AutoSend<Bot>, Message>,
+    chat: ChatId,
     repo: &str,
 ) -> Result<TaskGuardBare, error::Error> {
-    let chat = cx.chat_id();
     let task = repo::tasks::Task {
         chat,
         repo: repo.to_owned(),
     };
-    match task.lock_bare()? {
+    match task.try_lock_bare()? {
         Some(lock) => Ok(lock),
         None => {
             log::info!("ignored command from {} on '{}'", chat, repo);
