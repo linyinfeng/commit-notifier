@@ -231,10 +231,10 @@ fn branch_name_map_filter(name: &str) -> Option<&str> {
     Some(captures.get(1).unwrap().as_str())
 }
 
-fn update_from_root<'repo>(
+fn update_from_root(
     cache: &Connection,
     target: &str,
-    repo: &'repo Repository,
+    repo: &Repository,
     root: Commit,
 ) -> Result<(), Error> {
     // phase 1: find commits with out cache
