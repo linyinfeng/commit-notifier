@@ -69,7 +69,7 @@ impl Error {
         msg: &Message,
     ) -> Result<(), teloxide::RequestError>{
         log::warn!("report error to chat {}: {:?}", msg.chat.id, self);
-        bot.send_message(msg.chat.id, format!("{}", self))
+        bot.send_message(msg.chat.id, format!("{self}"))
             .reply_to_message_id(msg.id)
             .await?;
         Ok(())

@@ -267,7 +267,7 @@ async fn list(bot: Bot, msg: Message) -> Result<(), CommandError> {
             result.push_str("  (nothing)\n");
         }
         for branch in branches.keys() {
-            result.push_str(&format!("  - {}\n", branch));
+            result.push_str(&format!("  - {branch}\n"));
         }
 
         result.push('\n');
@@ -291,13 +291,12 @@ async fn repo_add(
     if repo::exists(chat, &name)? {
         return Err(error::Error::RepoExists(name).into());
     }
-    reply_to_msg(&bot, &msg, format!("start clone into '{}'", name)).await?;
+    reply_to_msg(&bot, &msg, format!("start clone into '{name}'")).await?;
     let output = repo::create(lock, &url).await?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     reply_to_msg(&bot, &msg, format!(
-        "repository '{}' added\nstdout:\n{}\nstderr:\n{}",
-        name, stdout, stderr
+        "repository '{name}' added\nstdout:\n{stdout}\nstderr:\n{stderr}"
     )).await?;
     Ok(())
 }
@@ -320,8 +319,7 @@ async fn repo_edit(
     };
     lock.save_resources()?;
     reply_to_msg(&bot, &msg, format!(
-        "repository '{}' edited, current settings:\n{:#?}",
-        name, current_settings
+        "repository '{name}' edited, current settings:\n{current_settings:#?}"
     )).await?;
     Ok(())
 }
@@ -337,7 +335,7 @@ async fn repo_remove(
         return Err(error::Error::UnknownRepository(name).into());
     }
     repo::remove(lock).await?;
-    reply_to_msg(&bot, &msg, format!("repository '{}' removed", name)).await?;
+    reply_to_msg(&bot, &msg, format!("repository '{name}' removed")).await?;
     Ok(())
 }
 
@@ -351,7 +349,7 @@ async fn commit_add(
     let lock = prepare_lock(msg.chat.id, &repo)?;
     let settings = CommitSettings { comment };
     repo::commit_add(lock, &hash, settings).await?;
-    reply_to_msg(&bot, &msg, format!("commit {} added", hash)).await?;
+    reply_to_msg(&bot, &msg, format!("commit {hash} added")).await?;
     commit_check(bot, msg, repo, hash).await
 }
 
@@ -363,7 +361,7 @@ async fn commit_remove(
 ) -> Result<(), CommandError> {
     let lock = prepare_lock(msg.chat.id, &repo)?;
     repo::commit_remove(lock, &hash).await?;
-    reply_to_msg(&bot, &msg, format!("commit {} removed", hash)).await?;
+    reply_to_msg(&bot, &msg, format!("commit {hash} removed")).await?;
     Ok(())
 }
 
@@ -411,7 +409,7 @@ async fn branch_remove(
 ) -> Result<(), CommandError> {
     let lock = prepare_lock(msg.chat.id, &repo)?;
     repo::branch_remove(lock, &branch).await?;
-    reply_to_msg(&bot, &msg, format!("branch {} removed", branch)).await?;
+    reply_to_msg(&bot, &msg, format!("branch {branch} removed")).await?;
     Ok(())
 }
 
@@ -548,7 +546,7 @@ where
     T: fmt::Display,
 {
     let mut res: String = s
-        .map(|t| format!("{}", t))
+        .map(|t| format!("{t}"))
         .map(|t| format!("\\- {}\n", markdown::escape(&t)))
         .collect();
     if res.is_empty() {

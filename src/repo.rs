@@ -311,7 +311,7 @@ fn update_from_root<'repo>(
         }
 
         let oid = commit.id();
-        let str_commit = format!("{}", oid);
+        let str_commit = format!("{oid}");
 
         let mut hit = false;
         if str_commit == target {
@@ -322,7 +322,7 @@ fn update_from_root<'repo>(
                 hit |= if in_memory_cache.contains_key(&pid) {
                     in_memory_cache[&pid]
                 } else {
-                    let str_parent = format!("{}", pid);
+                    let str_parent = format!("{pid}");
                     match cache::query(cache, target, &str_parent)? {
                         None => unreachable!(),
                         Some(b) => b,
@@ -337,7 +337,7 @@ fn update_from_root<'repo>(
     // unchecked: no nested transaction
     let tx = cache.unchecked_transaction()?;
     for (oid, hit) in in_memory_cache {
-        let str_commit = format!("{}", oid);
+        let str_commit = format!("{oid}");
         // wrap store operations in transaction to improve performance
         cache::store(&tx, target, &str_commit, hit)?;
     }
@@ -389,7 +389,7 @@ pub async fn branch_check(lock: TaskGuard, branch_name: &str) -> Result<BranchCh
         };
 
         // get the new commit (optional)
-        let remote_branch_name = format!("origin/{}", branch_name);
+        let remote_branch_name = format!("origin/{branch_name}");
         let commit = match resources
             .repo
             .find_branch(&remote_branch_name, BranchType::Remote)

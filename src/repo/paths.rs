@@ -52,7 +52,7 @@ fn chat_dir(chat: ChatId) -> PathBuf {
     let chat_dir_name = if num < 0 {
         format!("_{}", num.unsigned_abs())
     } else {
-        format!("{}", chat)
+        format!("{chat}")
     };
     working_dir.join(chat_dir_name)
 }
