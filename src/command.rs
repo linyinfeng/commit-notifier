@@ -25,9 +25,7 @@ pub enum Notifier {
         branch_regex: Option<String>,
     },
     #[command(about = "remove a repository")]
-    RepoRemove {
-        name: String,
-    },
+    RepoRemove { name: String },
     #[command(about = "add a commit")]
     CommitAdd {
         repo: String,
@@ -36,30 +34,15 @@ pub enum Notifier {
         comment: String,
     },
     #[command(about = "remove a commit")]
-    CommitRemove {
-        repo: String,
-        hash: String,
-    },
+    CommitRemove { repo: String, hash: String },
     #[command(about = "fire a commit check immediately")]
-    CommitCheck {
-        repo: String,
-        hash: String,
-    },
+    CommitCheck { repo: String, hash: String },
     #[command(about = "add a branch")]
-    BranchAdd {
-        repo: String,
-        branch: String,
-    },
+    BranchAdd { repo: String, branch: String },
     #[command(about = "remove a branch")]
-    BranchRemove {
-        repo: String,
-        branch: String,
-    },
+    BranchRemove { repo: String, branch: String },
     #[command(about = "fire a branch check immediately")]
-    BranchCheck {
-        repo: String,
-        branch: String,
-    },
+    BranchCheck { repo: String, branch: String },
     #[command(about = "list repositories and commits")]
     List,
 }
