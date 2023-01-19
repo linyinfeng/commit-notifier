@@ -1,3 +1,4 @@
+use crate::condition;
 use crate::error::Error;
 use clap::ColorChoice;
 use clap::Parser;
@@ -15,7 +16,7 @@ pub enum Notifier {
     #[command(about = "add a repository")]
     RepoAdd {
         name: String,
-        #[structopt(long, short)]
+        #[arg(long, short)]
         url: String,
     },
     #[command(about = "edit settings of a repository")]
@@ -30,7 +31,7 @@ pub enum Notifier {
     CommitAdd {
         repo: String,
         hash: String,
-        #[structopt(long, short)]
+        #[arg(long, short)]
         comment: String,
     },
     #[command(about = "remove a commit")]
@@ -43,6 +44,19 @@ pub enum Notifier {
     BranchRemove { repo: String, branch: String },
     #[command(about = "fire a branch check immediately")]
     BranchCheck { repo: String, branch: String },
+    #[command(about = "add an auto clean condition")]
+    ConditionAdd {
+        repo: String,
+        identifier: String,
+        #[arg(value_enum, short = 't', long = "type")]
+        kind: condition::Kind,
+        #[arg(short, long = "expr")]
+        expression: String,
+    },
+    #[command(about = "remove an auto clean condition")]
+    ConditionRemove { repo: String, identifier: String },
+    #[command(about = "manually trigger an auto clean condition check")]
+    ConditionTrigger { repo: String, identifier: String },
     #[command(about = "list repositories and commits")]
     List,
 }

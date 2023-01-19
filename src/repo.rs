@@ -10,17 +10,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::ops::DerefMut;
 use std::process::{Command, Output};
+use std::sync::MutexGuard;
 use teloxide::types::ChatId;
 use tokio::task::{self, spawn_blocking};
 
 use crate::cache;
+use crate::condition::Condition;
 use crate::error::Error;
 use crate::repo::results::CommitResults;
 use crate::repo::tasks::TaskRef;
 
 use self::results::BranchResults;
-use self::settings::{BranchSettings, CommitSettings};
-use self::tasks::{TaskGuard, TaskGuardBare};
+use self::settings::{BranchSettings, CommitSettings, ConditionSettings};
+use self::tasks::{Resources, TaskGuard, TaskGuardBare};
 
 static ORIGIN_RE: once_cell::sync::Lazy<Regex> =
     once_cell::sync::Lazy::new(|| Regex::new("^origin/(.*)$").unwrap());
@@ -35,6 +37,11 @@ pub struct CommitCheckResult {
 pub struct BranchCheckResult {
     pub old: Option<String>,
     pub new: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct ConditionCheckResult {
+    pub removed: Vec<String>,
 }
 
 pub async fn create(lock: TaskGuardBare, url: &str) -> Result<Output, Error> {
@@ -126,16 +133,24 @@ pub async fn commit_add(
 pub async fn commit_remove(lock: TaskGuard, commit: &str) -> Result<(), Error> {
     {
         let mut resources = lock.resources.lock().unwrap();
-
-        if !resources.settings.commits.contains_key(commit) {
-            return Err(Error::UnknownCommit(commit.to_owned()));
-        }
-
-        resources.settings.commits.remove(commit);
-        resources.results.commits.remove(commit);
-        cache::remove(&resources.cache, commit)?;
+        commit_remove_guarded(&mut resources, commit)?;
     }
     lock.save_resources()?;
+    Ok(())
+}
+
+fn commit_remove_guarded(
+    resources: &mut MutexGuard<'_, Resources>,
+    commit: &str,
+) -> Result<(), Error> {
+    if !resources.settings.commits.contains_key(commit) {
+        return Err(Error::UnknownCommit(commit.to_owned()));
+    }
+
+    resources.settings.commits.remove(commit);
+    resources.results.commits.remove(commit);
+    cache::remove(&resources.cache, commit)?;
+
     Ok(())
 }
 
@@ -420,4 +435,64 @@ pub async fn branch_check(lock: TaskGuard, branch_name: &str) -> Result<BranchCh
     };
     lock.save_resources()?;
     Ok(result)
+}
+
+pub async fn condition_add(
+    lock: TaskGuard,
+    identifier: &str,
+    settings: ConditionSettings,
+) -> Result<(), Error> {
+    {
+        let mut resources = lock.resources.lock().unwrap();
+        if resources.settings.conditions.contains_key(identifier) {
+            return Err(Error::ConditionExists(identifier.to_owned()));
+        }
+        resources
+            .settings
+            .conditions
+            .insert(identifier.to_owned(), settings);
+    }
+    lock.save_resources()?;
+    Ok(())
+}
+
+pub async fn condition_remove(lock: TaskGuard, identifier: &str) -> Result<(), Error> {
+    {
+        let mut resources = lock.resources.lock().unwrap();
+
+        if !resources.settings.conditions.contains_key(identifier) {
+            return Err(Error::UnknownCondition(identifier.to_owned()));
+        }
+
+        resources.settings.conditions.remove(identifier);
+    }
+    lock.save_resources()?;
+    Ok(())
+}
+
+pub async fn condition_trigger(
+    lock: TaskGuard,
+    identifier: &str,
+) -> Result<ConditionCheckResult, Error> {
+    let mut remove_list = Vec::new();
+    {
+        let mut resources = lock.resources.lock().unwrap();
+        let setting = match resources.settings.conditions.get(identifier) {
+            Some(s) => s,
+            None => return Err(Error::UnknownCondition(identifier.to_owned())),
+        };
+        let cond = &setting.condition;
+        for (commit, result) in resources.results.commits.iter() {
+            if cond.meet(result) {
+                remove_list.push(commit.clone());
+            }
+        }
+        for r in remove_list.iter() {
+            commit_remove_guarded(&mut resources, r)?;
+        }
+    }
+    lock.save_resources()?;
+    Ok(ConditionCheckResult {
+        removed: remove_list,
+    })
 }

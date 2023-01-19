@@ -60,6 +60,10 @@ pub enum Error {
     Regex(#[from] regex::Error),
     #[error("internal error: invalid try lock")]
     TryLock,
+    #[error("condition identifier already exists: '{0}'")]
+    ConditionExists(String),
+    #[error("unknown condition identifier: '{0}'")]
+    UnknownCondition(String),
 }
 
 impl Error {

@@ -1,5 +1,6 @@
 mod cache;
 mod command;
+mod condition;
 mod error;
 mod options;
 mod repo;
@@ -9,10 +10,12 @@ use std::fmt;
 use std::str::FromStr;
 
 use chrono::Utc;
+use condition::GeneralCondition;
 use cron::Schedule;
 use regex::Regex;
 use repo::settings::BranchSettings;
 use repo::settings::CommitSettings;
+use repo::settings::ConditionSettings;
 use repo::tasks::Task;
 use repo::tasks::TaskGuard;
 use repo::tasks::TaskGuardBare;
@@ -61,6 +64,18 @@ async fn answer(bot: Bot, msg: Message, bc: BCommand) -> ResponseResult<()> {
                 }
                 command::Notifier::BranchCheck { repo, branch } => {
                     branch_check(bot, msg, repo, branch).await
+                }
+                command::Notifier::ConditionAdd {
+                    repo,
+                    identifier,
+                    kind,
+                    expression,
+                } => condition_add(bot, msg, repo, identifier, kind, expression).await,
+                command::Notifier::ConditionRemove { repo, identifier } => {
+                    condition_remove(bot, msg, repo, identifier).await
+                }
+                command::Notifier::ConditionTrigger { repo, identifier } => {
+                    condition_trigger(bot, msg, repo, identifier).await
                 }
                 command::Notifier::List => list(bot, msg).await,
             }
@@ -440,6 +455,53 @@ async fn branch_check(
     Ok(())
 }
 
+async fn condition_add(
+    bot: Bot,
+    msg: Message,
+    repo: String,
+    identifier: String,
+    kind: condition::Kind,
+    expr: String,
+) -> Result<(), CommandError> {
+    let lock = prepare_lock(msg.chat.id, &repo)?;
+    let settings = ConditionSettings {
+        condition: GeneralCondition::parse(kind, &expr)?,
+    };
+    repo::condition_add(lock, &identifier, settings).await?;
+    reply_to_msg(&bot, &msg, format!("condition {identifier} added")).await?;
+    condition_trigger(bot, msg, repo, identifier).await
+}
+
+async fn condition_remove(
+    bot: Bot,
+    msg: Message,
+    repo: String,
+    identifier: String,
+) -> Result<(), CommandError> {
+    let lock = prepare_lock(msg.chat.id, &repo)?;
+    repo::condition_remove(lock, &identifier).await?;
+    reply_to_msg(&bot, &msg, format!("condition {identifier} removed")).await?;
+    Ok(())
+}
+
+async fn condition_trigger(
+    bot: Bot,
+    msg: Message,
+    repo: String,
+    identifier: String,
+) -> Result<(), CommandError> {
+    let lock = prepare_lock(msg.chat.id, &repo)?;
+    let result = repo::condition_trigger(lock, &identifier).await?;
+    reply_to_msg(
+        &bot,
+        &msg,
+        condition_check_message(&repo, &identifier, &result),
+    )
+    .parse_mode(ParseMode::MarkdownV2)
+    .await?;
+    Ok(())
+}
+
 fn prepare_lock(chat: ChatId, repo: &str) -> Result<TaskGuard, error::Error> {
     let task = repo::tasks::Task {
         chat,
@@ -530,6 +592,23 @@ fn branch_check_message(
     )
 }
 
+fn condition_check_message(
+    repo: &str,
+    identifier: &str,
+    result: &repo::ConditionCheckResult,
+) -> String {
+    format!(
+        "{repo}/`{identifier}`
+
+branches removed by this condition:
+{removed}
+",
+        repo = markdown::escape(repo),
+        identifier = markdown::escape(identifier),
+        removed = markdown_list(result.removed.iter()),
+    )
+}
+
 fn markdown_optional_commit(commit: Option<&str>) -> String {
     match &commit {
         None => "\\(nothing\\)".to_owned(),
@@ -544,7 +623,7 @@ where
 {
     let mut res: String = s
         .map(|t| format!("{t}"))
-        .map(|t| format!("\\- {}\n", markdown::escape(&t)))
+        .map(|t| format!("\\- `{}`\n", markdown::escape(&t)))
         .collect();
     if res.is_empty() {
         "\u{2205}".to_owned() // the empty set symbol
