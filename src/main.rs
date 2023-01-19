@@ -259,7 +259,7 @@ async fn list(bot: Bot, msg: Message) -> Result<(), CommandError> {
 
     let repos = repo::paths::repos(chat)?;
     for repo in repos {
-        result.push_str(&repo);
+        result.push_str(&markdown::escape(&repo));
         result.push('\n');
 
         let lock = (Task {
@@ -273,18 +273,30 @@ async fn list(bot: Bot, msg: Message) -> Result<(), CommandError> {
         result.push_str("  commits:\n");
         let commits = &resources.settings.commits;
         if commits.is_empty() {
-            result.push_str("  (nothing)\n");
+            result.push_str("  \\(nothing\\)\n");
         }
         for (commit, settings) in commits {
-            result.push_str(&format!("  - {}\n    {}\n", commit, settings.comment));
+            result.push_str(&format!(
+                "  \\- `{}`\n    {}\n",
+                markdown::escape(commit),
+                markdown::escape(&settings.comment)
+            ));
         }
         result.push_str("  branches:\n");
         let branches = &resources.settings.branches;
         if branches.is_empty() {
-            result.push_str("  (nothing)\n");
+            result.push_str("  \\(nothing\\)\n");
         }
         for branch in branches.keys() {
-            result.push_str(&format!("  - {branch}\n"));
+            result.push_str(&format!("  \\- `{}`\n", markdown::escape(branch)));
+        }
+        result.push_str("  conditions:\n");
+        let conditions = &resources.settings.conditions;
+        if conditions.is_empty() {
+            result.push_str("  \\(nothing\\)\n");
+        }
+        for condition in conditions.keys() {
+            result.push_str(&format!("  \\- `{}`\n", markdown::escape(condition)));
         }
 
         result.push('\n');
@@ -292,7 +304,9 @@ async fn list(bot: Bot, msg: Message) -> Result<(), CommandError> {
     if result.is_empty() {
         result.push_str("(nothing)\n");
     }
-    reply_to_msg(&bot, &msg, result).await?;
+    reply_to_msg(&bot, &msg, result)
+        .parse_mode(ParseMode::MarkdownV2)
+        .await?;
 
     Ok(())
 }
@@ -540,6 +554,13 @@ fn commit_check_message(
     settings: &CommitSettings,
     result: &repo::CommitCheckResult,
 ) -> String {
+    let auto_remove_msg = match &result.removed_by_condition {
+        None => String::new(),
+        Some(condition) => format!(
+            "\n*auto removed* by condition: `{}`",
+            markdown::escape(&condition)
+        ),
+    };
     format!(
         "{repo}/`{commit}`
 
@@ -551,6 +572,7 @@ fn commit_check_message(
 
 *all* branches containing this commit:
 {all}
+{auto_remove_msg}
 ",
         repo = markdown::escape(repo),
         commit = markdown::escape(commit),

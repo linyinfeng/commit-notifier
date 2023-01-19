@@ -10,7 +10,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::ops::DerefMut;
 use std::process::{Command, Output};
-use std::sync::MutexGuard;
 use teloxide::types::ChatId;
 use tokio::task::{self, spawn_blocking};
 
@@ -31,6 +30,7 @@ static ORIGIN_RE: once_cell::sync::Lazy<Regex> =
 pub struct CommitCheckResult {
     pub all: BTreeSet<String>,
     pub new: BTreeSet<String>,
+    pub removed_by_condition: Option<String>,
 }
 
 #[derive(Debug)]
@@ -139,10 +139,7 @@ pub async fn commit_remove(lock: TaskGuard, commit: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn commit_remove_guarded(
-    resources: &mut MutexGuard<'_, Resources>,
-    commit: &str,
-) -> Result<(), Error> {
+fn commit_remove_guarded(resources: &mut Resources, commit: &str) -> Result<(), Error> {
     if !resources.settings.commits.contains_key(commit) {
         return Err(Error::UnknownCommit(commit.to_owned()));
     }
@@ -164,6 +161,9 @@ pub async fn commit_check(
             let mut guard = task.resources.lock().unwrap();
             let resources = guard.deref_mut();
 
+            /* 2 phase */
+
+            /* phase 1: commit check */
             let mut branches_hit = BTreeSet::new();
 
             let results = &mut resources.results;
@@ -204,12 +204,12 @@ pub async fn commit_check(
             }
 
             // insert new results
-            results.commits.insert(
-                target_commit.clone(),
-                CommitResults {
-                    branches: branches_hit.clone(),
-                },
-            );
+            let commit_results = CommitResults {
+                branches: branches_hit.clone(),
+            };
+            results
+                .commits
+                .insert(target_commit.clone(), commit_results.clone());
             log::info!(
                 "finished updating for commit {} on {}",
                 target_commit,
@@ -221,9 +221,22 @@ pub async fn commit_check(
                 .difference(&branches_hit_old)
                 .cloned()
                 .collect();
+
+            /* phase 2: condition check */
+            let mut removed_by_condition = None;
+            for (identifier, c) in resources.settings.conditions.iter() {
+                if c.condition.meet(&commit_results) && removed_by_condition.is_none() {
+                    removed_by_condition = Some(identifier.clone());
+                }
+            }
+            if removed_by_condition.is_some() {
+                commit_remove_guarded(resources, &target_commit)?;
+            }
+
             CommitCheckResult {
                 all: branches_hit,
                 new: branches_hit_diff,
+                removed_by_condition,
             }
         };
         // release the lock and save result
