@@ -4,7 +4,9 @@ use std::path::PathBuf;
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
 pub struct Options {
+    #[arg(short, long)]
     pub working_dir: PathBuf,
+    #[arg(short, long)]
     pub cron: String,
 }
 
