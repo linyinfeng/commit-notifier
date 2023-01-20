@@ -558,7 +558,7 @@ fn commit_check_message(
         None => String::new(),
         Some(condition) => format!(
             "\n*auto removed* by condition: `{}`",
-            markdown::escape(&condition)
+            markdown::escape(condition)
         ),
     };
     format!(
