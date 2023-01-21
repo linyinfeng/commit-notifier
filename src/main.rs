@@ -2,6 +2,7 @@ mod cache;
 mod command;
 mod condition;
 mod error;
+mod github;
 mod options;
 mod repo;
 mod utils;
@@ -12,6 +13,8 @@ use std::str::FromStr;
 use chrono::Utc;
 use condition::GeneralCondition;
 use cron::Schedule;
+use error::Error;
+use github::GitHubInfo;
 use regex::Regex;
 use repo::settings::BranchSettings;
 use repo::settings::CommitSettings;
@@ -27,7 +30,7 @@ use teloxide::utils::markdown;
 use tokio::time::sleep;
 use utils::reply_to_msg;
 
-#[derive(BotCommands, Clone)]
+#[derive(BotCommands, Clone, Debug)]
 #[command(rename_rule = "lowercase", description = "Supported commands:")]
 enum BCommand {
     #[command(description = "main and the only command.")]
@@ -35,21 +38,30 @@ enum BCommand {
 }
 
 async fn answer(bot: Bot, msg: Message, bc: BCommand) -> ResponseResult<()> {
+    log::debug!("message: {:?}", msg);
+    log::trace!("bot command: {:?}", bc);
     let BCommand::Notifier(input) = bc;
     let result = match command::parse(input) {
         Ok(command) => {
+            log::debug!("command: {:?}", command);
             let (bot, msg) = (bot.clone(), msg.clone());
             match command {
                 command::Notifier::RepoAdd { name, url } => repo_add(bot, msg, name, url).await,
-                command::Notifier::RepoEdit { name, branch_regex } => {
-                    repo_edit(bot, msg, name, branch_regex).await
-                }
+                command::Notifier::RepoEdit {
+                    name,
+                    branch_regex,
+                    github_info,
+                    clear_github_info,
+                } => repo_edit(bot, msg, name, branch_regex, github_info, clear_github_info).await,
                 command::Notifier::RepoRemove { name } => repo_remove(bot, msg, name).await,
                 command::Notifier::CommitAdd {
                     repo,
                     hash,
                     comment,
                 } => commit_add(bot, msg, repo, hash, comment).await,
+                command::Notifier::PrAdd { repo, pr, comment } => {
+                    pr_add(bot, msg, repo, pr, comment).await
+                }
                 command::Notifier::CommitRemove { repo, hash } => {
                     commit_remove(bot, msg, repo, hash).await
                 }
@@ -335,14 +347,22 @@ async fn repo_edit(
     msg: Message,
     name: String,
     branch_regex: Option<String>,
+    github_info: Option<GitHubInfo>,
+    clear_github_info: bool,
 ) -> Result<(), CommandError> {
     let lock = prepare_lock(msg.chat.id, &name)?;
-    let current_settings = {
+    let new_settings = {
         let mut resources = lock.resources.lock().unwrap();
         if let Some(r) = branch_regex {
             // ensure regex is valid
             let _: Regex = Regex::new(&r).map_err(error::Error::from)?;
             resources.settings.branch_regex = r;
+        }
+        if let Some(info) = github_info {
+            resources.settings.github_info = Some(info);
+        }
+        if clear_github_info {
+            resources.settings.github_info = None;
         }
         resources.settings.clone()
     };
@@ -350,7 +370,7 @@ async fn repo_edit(
     reply_to_msg(
         &bot,
         &msg,
-        format!("repository '{name}' edited, current settings:\n{current_settings:#?}"),
+        format!("repository '{name}' edited, current settings:\n{new_settings:#?}"),
     )
     .await?;
     Ok(())
@@ -379,6 +399,41 @@ async fn commit_add(
     repo::commit_add(lock, &hash, settings).await?;
     reply_to_msg(&bot, &msg, format!("commit {hash} added")).await?;
     commit_check(bot, msg, repo, hash).await
+}
+
+async fn pr_add(
+    bot: Bot,
+    msg: Message,
+    repo: String,
+    pr_id: u64,
+    comment: Option<String>,
+) -> Result<(), CommandError> {
+    let github_info = {
+        let lock = prepare_lock(msg.chat.id, &repo)?;
+        let resources = lock.resources.lock().unwrap();
+        resources
+            .settings
+            .github_info
+            .clone()
+            .ok_or(Error::NoGitHubInfo(repo.clone()))?
+    };
+    let pr = github::get_pr(&github_info, pr_id).await?;
+    let commit = pr.merge_commit_sha.ok_or(Error::NoMergeCommit { github_info, pr_id })?;
+    let at = match msg.from() {
+        None => "".to_string(),
+        Some(u) => match &u.username {
+            None => "".to_string(),
+            Some(name) => format!("\n\n@{name}"),
+        }
+    };
+    let comment = format!(
+        "{url}
+{title}{comment}{at}",
+        url = pr.html_url.map(|u| u.to_string()).unwrap_or(pr.url),
+        title = pr.title.as_deref().unwrap_or("untitled"),
+        comment = comment.map(|c| format!("\n{c}")).unwrap_or("".to_string()),
+    );
+    commit_add(bot, msg, repo, commit, comment).await
 }
 
 async fn commit_remove(

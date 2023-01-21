@@ -3,6 +3,8 @@ use std::ffi::OsString;
 use teloxide::prelude::*;
 use thiserror::Error;
 
+use crate::github::GitHubInfo;
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("unclosed quote")]
@@ -64,6 +66,12 @@ pub enum Error {
     ConditionExists(String),
     #[error("unknown condition identifier: '{0}'")]
     UnknownCondition(String),
+    #[error("github api error: '{0}'")]
+    Octocrab(#[from] octocrab::Error),
+    #[error("no merge commit: '{github_info}#{pr_id}'")]
+    NoMergeCommit { github_info: GitHubInfo, pr_id: u64 },
+    #[error("no associated github info for repo: '{0}'")]
+    NoGitHubInfo(String),
 }
 
 impl Error {

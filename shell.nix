@@ -4,6 +4,7 @@ pkgs.mkShell {
   packages = with pkgs; [
     rustup
     rust-analyzer
+    cargo-edit
 
     pkg-config
     sqlite

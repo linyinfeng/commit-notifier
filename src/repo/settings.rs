@@ -2,11 +2,12 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::condition::GeneralCondition;
+use crate::{condition::GeneralCondition, github::GitHubInfo};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
     pub branch_regex: String,
+    pub github_info: Option<GitHubInfo>,
     pub commits: BTreeMap<String, CommitSettings>,
     pub branches: BTreeMap<String, BranchSettings>,
     pub conditions: BTreeMap<String, ConditionSettings>,

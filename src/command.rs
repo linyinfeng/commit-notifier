@@ -1,5 +1,7 @@
 use crate::condition;
 use crate::error::Error;
+use crate::github::parse_github_info;
+use crate::github::GitHubInfo;
 use clap::ColorChoice;
 use clap::Parser;
 use std::{ffi::OsString, iter};
@@ -24,6 +26,10 @@ pub enum Notifier {
         name: String,
         #[arg(long, short)]
         branch_regex: Option<String>,
+        #[arg(long, short, value_parser = parse_github_info, group = "edit_github_info")]
+        github_info: Option<GitHubInfo>,
+        #[arg(long, group = "edit_github_info")]
+        clear_github_info: bool,
     },
     #[command(about = "remove a repository")]
     RepoRemove { name: String },
@@ -38,6 +44,13 @@ pub enum Notifier {
     CommitRemove { repo: String, hash: String },
     #[command(about = "fire a commit check immediately")]
     CommitCheck { repo: String, hash: String },
+    #[command(about = "add a merge commit of a pull request")]
+    PrAdd {
+        repo: String,
+        pr: u64,
+        #[arg(long, short)]
+        comment: Option<String>,
+    },
     #[command(about = "add a branch")]
     BranchAdd { repo: String, branch: String },
     #[command(about = "remove a branch")]
