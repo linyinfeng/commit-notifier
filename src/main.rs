@@ -418,13 +418,15 @@ async fn pr_add(
             .ok_or(Error::NoGitHubInfo(repo.clone()))?
     };
     let pr = github::get_pr(&github_info, pr_id).await?;
-    let commit = pr.merge_commit_sha.ok_or(Error::NoMergeCommit { github_info, pr_id })?;
+    let commit = pr
+        .merge_commit_sha
+        .ok_or(Error::NoMergeCommit { github_info, pr_id })?;
     let at = match msg.from() {
         None => "".to_string(),
         Some(u) => match &u.username {
             None => "".to_string(),
             Some(name) => format!("\n\n@{name}"),
-        }
+        },
     };
     let comment = format!(
         "{url}
