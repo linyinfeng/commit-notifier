@@ -396,8 +396,15 @@ async fn commit_add(
 ) -> Result<(), CommandError> {
     let lock = prepare_lock(msg.chat.id, &repo)?;
     let settings = CommitSettings { comment };
-    repo::commit_add(lock, &hash, settings).await?;
-    reply_to_msg(&bot, &msg, format!("commit {hash} added")).await?;
+    match repo::commit_add(lock, &hash, settings).await {
+        Ok(()) => {
+            reply_to_msg(&bot, &msg, format!("commit {hash} added")).await?;
+        },
+        Err(Error::CommitExists(_)) => {
+            // do nothing
+        },
+        Err(e) => return Err(e.into()),
+    }
     commit_check(bot, msg, repo, hash).await
 }
 
