@@ -7,6 +7,7 @@ mod options;
 mod repo;
 mod utils;
 
+use std::env;
 use std::fmt;
 use std::str::FromStr;
 
@@ -131,12 +132,29 @@ async fn run() {
     options::initialize();
     log::info!("config = {:?}", options::get());
 
+    octocrab_initialize();
+
     let bot = Bot::from_env();
 
     tokio::select! {
         _ = schedule(bot.clone()) => { },
         _ = BCommand::repl(bot, answer) => { },
     }
+}
+
+fn octocrab_initialize() {
+    let builder = octocrab::Octocrab::builder();
+    let with_token = match env::var("GITHUB_TOKEN") {
+        Ok(token) => {
+            log::info!("github token set using environment variable 'GITHUB_TOKEN'");
+            builder.personal_token(token)
+        },
+        Err(e) => {
+            log::info!("github token not set: {}", e);
+            builder
+        },
+    };
+    octocrab::initialise(with_token).unwrap();
 }
 
 async fn schedule(bot: Bot) {
