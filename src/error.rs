@@ -44,12 +44,16 @@ pub enum Error {
     Serde(#[from] serde_json::Error),
     #[error("unknown commit: '{0}'")]
     UnknownCommit(String),
+    #[error("unknown pull request: '{0}'")]
+    UnknownPullRequest(u64),
     #[error("unknown branch: '{0}'")]
     UnknownBranch(String),
     #[error("unknown repository: '{0}'")]
     UnknownRepository(String),
     #[error("commit already exists: '{0}'")]
     CommitExists(String),
+    #[error("pull request already exists: '{0}'")]
+    PullRequestExists(u64),
     #[error("branch already exists: '{0}'")]
     BranchExists(String),
     #[error("invalid os string: '{0:?}'")]
@@ -72,6 +76,8 @@ pub enum Error {
     NoMergeCommit { github_info: GitHubInfo, pr_id: u64 },
     #[error("no associated github info for repo: '{0}'")]
     NoGitHubInfo(String),
+    #[error("url parse error: '{0}'")]
+    UrlParse(#[from] url::ParseError),
 }
 
 impl Error {

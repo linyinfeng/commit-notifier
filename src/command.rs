@@ -1,6 +1,5 @@
 use crate::condition;
 use crate::error::Error;
-use crate::github::parse_github_info;
 use crate::github::GitHubInfo;
 use clap::ColorChoice;
 use clap::Parser;
@@ -16,17 +15,13 @@ use std::{ffi::OsString, iter};
 )]
 pub enum Notifier {
     #[command(about = "add a repository")]
-    RepoAdd {
-        name: String,
-        #[arg(long, short)]
-        url: String,
-    },
+    RepoAdd { name: String, url: String },
     #[command(about = "edit settings of a repository")]
     RepoEdit {
         name: String,
         #[arg(long, short)]
         branch_regex: Option<String>,
-        #[arg(long, short, value_parser = parse_github_info, group = "edit_github_info")]
+        #[arg(long, short, value_parser = GitHubInfo::parse, group = "edit_github_info")]
         github_info: Option<GitHubInfo>,
         #[arg(long, group = "edit_github_info")]
         clear_github_info: bool,
@@ -44,13 +39,17 @@ pub enum Notifier {
     CommitRemove { repo: String, hash: String },
     #[command(about = "fire a commit check immediately")]
     CommitCheck { repo: String, hash: String },
-    #[command(about = "add a merge commit of a pull request")]
+    #[command(about = "add a pull request")]
     PrAdd {
         repo: String,
         pr: u64,
         #[arg(long, short)]
         comment: Option<String>,
     },
+    #[command(about = "remove a pull request")]
+    PrRemove { repo: String, pr: u64 },
+    #[command(about = "check a pull request")]
+    PrCheck { repo: String, pr: u64 },
     #[command(about = "add a branch")]
     BranchAdd { repo: String, branch: String },
     #[command(about = "remove a branch")]

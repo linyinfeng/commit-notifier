@@ -32,18 +32,18 @@ pub fn get(chat_id: ChatId, repo: &str) -> Result<Paths, Error> {
 
     let chat_working_dir = chat_dir(chat_id);
     if !chat_working_dir.is_dir() {
-        Err(Error::NotInAllowList(chat_id))
-    } else {
-        let outer_dir = chat_working_dir.join(repo);
-        Ok(Paths {
-            outer: outer_dir.clone(),
-            lock: outer_dir.join("lock"),
-            repo: outer_dir.join("repo"),
-            cache: outer_dir.join("cache.sqlite"),
-            settings: outer_dir.join("settings.json"),
-            results: outer_dir.join("results.json"),
-        })
+        return Err(Error::NotInAllowList(chat_id));
     }
+
+    let outer_dir = chat_working_dir.join(repo);
+    Ok(Paths {
+        outer: outer_dir.clone(),
+        lock: outer_dir.join("lock"),
+        repo: outer_dir.join("repo"),
+        cache: outer_dir.join("cache.sqlite"),
+        settings: outer_dir.join("settings.json"),
+        results: outer_dir.join("results.json"),
+    })
 }
 
 fn chat_dir(chat: ChatId) -> PathBuf {
@@ -86,6 +86,10 @@ pub fn repos(chat: ChatId) -> Result<BTreeSet<String>, Error> {
     let mut repos = BTreeSet::new();
 
     let chat_working_dir = chat_dir(chat);
+    if !chat_working_dir.is_dir() {
+        return Err(Error::NotInAllowList(chat));
+    }
+
     let dirs = fs::read_dir(chat_working_dir)?;
     for dir_res in dirs {
         let dir = dir_res?;

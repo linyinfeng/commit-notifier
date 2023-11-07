@@ -24,10 +24,11 @@ pub struct Task {
 }
 
 impl Task {
+    // TODO: fine-grained lock
     // TODO: add lock and lock_bare
 
     // try lock and acquire all resources related to the task
-    pub fn lock(self) -> Result<Option<TaskGuard>, Error> {
+    pub fn try_lock(self) -> Result<Option<TaskGuard>, Error> {
         self.try_lock_inner().map(|o| o.map(Arc::new))
     }
 

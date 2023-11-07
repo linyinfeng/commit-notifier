@@ -20,6 +20,9 @@ use regex::Regex;
 use repo::settings::BranchSettings;
 use repo::settings::CommitSettings;
 use repo::settings::ConditionSettings;
+use repo::settings::NotifySettings;
+use repo::settings::PullRequestSettings;
+use repo::settings::Subscriber;
 use repo::tasks::Task;
 use repo::tasks::TaskGuard;
 use repo::tasks::TaskGuardBare;
@@ -29,7 +32,10 @@ use teloxide::types::ParseMode;
 use teloxide::utils::command::BotCommands;
 use teloxide::utils::markdown;
 use tokio::time::sleep;
+use url::Url;
 use utils::reply_to_msg;
+
+use crate::utils::push_empty_line;
 
 #[derive(BotCommands, Clone, Debug)]
 #[command(rename_rule = "lowercase", description = "Supported commands:")]
@@ -59,16 +65,18 @@ async fn answer(bot: Bot, msg: Message, bc: BCommand) -> ResponseResult<()> {
                     repo,
                     hash,
                     comment,
-                } => commit_add(bot, msg, repo, hash, comment).await,
-                command::Notifier::PrAdd { repo, pr, comment } => {
-                    pr_add(bot, msg, repo, pr, comment).await
-                }
+                } => commit_add(bot, msg, repo, hash, comment, None).await,
                 command::Notifier::CommitRemove { repo, hash } => {
                     commit_remove(bot, msg, repo, hash).await
                 }
                 command::Notifier::CommitCheck { repo, hash } => {
                     commit_check(bot, msg, repo, hash).await
                 }
+                command::Notifier::PrAdd { repo, pr, comment } => {
+                    pr_add(bot, msg, repo, pr, comment).await
+                }
+                command::Notifier::PrRemove { repo, pr } => pr_remove(bot, msg, repo, pr).await,
+                command::Notifier::PrCheck { repo, pr } => pr_check(bot, msg, repo, pr).await,
                 command::Notifier::BranchAdd { repo, branch } => {
                     branch_add(bot, msg, repo, branch).await
                 }
@@ -148,13 +156,14 @@ fn octocrab_initialize() {
         Ok(token) => {
             log::info!("github token set using environment variable 'GITHUB_TOKEN'");
             builder.personal_token(token)
-        },
+        }
         Err(e) => {
-            log::info!("github token not set: {}", e);
+            log::info!("github token not set: {e}");
             builder
-        },
+        }
     };
-    octocrab::initialise(with_token).unwrap();
+    let crab = with_token.build().unwrap();
+    octocrab::initialise(crab);
 }
 
 async fn schedule(bot: Bot) {
@@ -167,24 +176,20 @@ async fn schedule(bot: Bot) {
             Err(_) => continue,
             Ok(std_dur) => std_dur,
         };
-        log::info!(
-            "update is going to be triggered at '{}', sleep '{:?}'",
-            datetime,
-            dur
-        );
+        log::info!("update is going to be triggered at '{datetime}', sleep '{dur:?}'");
         sleep(dur).await;
-        log::info!("perform update '{}'", datetime);
+        log::info!("perform update '{datetime}'");
         if let Err(e) = update(bot.clone()).await {
-            log::error!("teloxide error in update: {}", e);
+            log::error!("teloxide error in update: {e}");
         }
-        log::info!("finished update '{}'", datetime);
+        log::info!("finished update '{datetime}'");
     }
 }
 
 async fn update(bot: Bot) -> Result<(), teloxide::RequestError> {
     let chats = match repo::paths::chats() {
         Err(e) => {
-            log::error!("failed to get chats: {}", e);
+            log::error!("failed to get chats: {e}");
             return Ok(());
         }
         Ok(cs) => cs,
@@ -193,33 +198,56 @@ async fn update(bot: Bot) -> Result<(), teloxide::RequestError> {
     for chat in chats {
         let repos = match repo::paths::repos(chat) {
             Err(e) => {
-                log::error!("failed to get repos for chat {}: {}", chat, e);
+                log::error!("failed to get repos for chat {chat}: {e}");
                 continue;
             }
             Ok(rs) => rs,
         };
         for repo in repos {
-            log::info!("update ({}, {})", chat, repo);
+            log::info!("update ({chat}, {repo})");
 
             let task = repo::tasks::Task {
                 chat,
                 repo: repo.to_owned(),
             };
-            let lock = match task.lock() {
+            let lock = match task.try_lock() {
                 Ok(Some(l)) => l,
                 Ok(None) => {
-                    log::info!("another task running on ({}, {}), skip", chat, repo);
+                    log::info!("another task running on ({chat}, {repo}), skip");
                     continue;
                 }
                 Err(e) => {
-                    log::error!("failed to acquire task guard in update: {}", e);
+                    log::error!("failed to acquire task guard in update: {e}");
                     continue;
                 }
             };
 
             if let Err(e) = repo::fetch(lock.clone()).await {
-                log::warn!("failed to fetch ({}, {}), skip: {}", chat, repo, e);
+                log::warn!("failed to fetch ({chat}, {repo}), skip: {e}");
                 continue;
+            }
+
+            // check pull requests of the repo
+            // check before commit
+            let pull_requests = {
+                let resources = lock.resources.lock().unwrap();
+                resources.settings.pull_requests.clone()
+            };
+            for (pr, settings) in pull_requests {
+                let result = match repo::pr_check(lock.clone(), pr).await {
+                    Err(e) => {
+                        log::warn!("failed to check pr ({chat}, {repo}, {pr}): {e}");
+                        continue;
+                    }
+                    Ok(r) => r,
+                };
+                log::info!("finished pr check ({chat}, {repo}, {pr})");
+                if let Some(commit) = result {
+                    let message = pr_merged_message(&repo, pr, &settings, &commit);
+                    bot.send_message(chat, message)
+                        .parse_mode(ParseMode::MarkdownV2)
+                        .await?;
+                }
             }
 
             // check branches of the repo
@@ -227,23 +255,17 @@ async fn update(bot: Bot) -> Result<(), teloxide::RequestError> {
                 let resources = lock.resources.lock().unwrap();
                 resources.settings.branches.clone()
             };
-            for (branch, info) in branches {
+            for (branch, settings) in branches {
                 let result = match repo::branch_check(lock.clone(), &branch).await {
                     Err(e) => {
-                        log::warn!(
-                            "failed to check branch ({}, {}, {}): {}",
-                            chat,
-                            repo,
-                            branch,
-                            e
-                        );
+                        log::warn!("failed to check branch ({chat}, {repo}, {branch}): {e}");
                         continue;
                     }
                     Ok(r) => r,
                 };
-                log::info!("finished branch check ({}, {}, {})", chat, repo, branch);
+                log::info!("finished branch check ({chat}, {repo}, {branch})");
                 if result.new != result.old {
-                    let message = branch_check_message(&repo, &branch, &info, &result);
+                    let message = branch_check_message(&repo, &branch, &settings, &result);
                     bot.send_message(chat, message)
                         .parse_mode(ParseMode::MarkdownV2)
                         .await?;
@@ -255,23 +277,17 @@ async fn update(bot: Bot) -> Result<(), teloxide::RequestError> {
                 let resources = lock.resources.lock().unwrap();
                 resources.settings.commits.clone()
             };
-            for (commit, info) in commits {
+            for (commit, settings) in commits {
                 let result = match repo::commit_check(lock.clone(), &commit).await {
                     Err(e) => {
-                        log::warn!(
-                            "failed to check commit ({}, {}, {}): {}",
-                            chat,
-                            repo,
-                            commit,
-                            e
-                        );
+                        log::warn!("failed to check commit ({chat}, {repo}, {commit}): {e}",);
                         continue;
                     }
                     Ok(r) => r,
                 };
-                log::info!("finished commit check ({}, {}, {})", chat, repo, commit);
+                log::info!("finished commit check ({chat}, {repo}, {commit})");
                 if !result.new.is_empty() {
-                    let message = commit_check_message(&repo, &commit, &info, &result);
+                    let message = commit_check_message(&repo, &commit, &settings, &result);
                     bot.send_message(chat, message)
                         .parse_mode(ParseMode::MarkdownV2)
                         .await?;
@@ -289,18 +305,19 @@ async fn list(bot: Bot, msg: Message) -> Result<(), CommandError> {
 
     let repos = repo::paths::repos(chat)?;
     for repo in repos {
+        result.push('*');
         result.push_str(&markdown::escape(&repo));
-        result.push('\n');
+        result.push_str("*\n");
 
         let lock = (Task {
             chat,
             repo: repo.clone(),
         })
-        .lock()?
+        .try_lock()?
         .ok_or(error::Error::AnotherTaskRunning(repo))?;
         let resources = lock.resources.lock().unwrap();
 
-        result.push_str("  commits:\n");
+        result.push_str("  *commits*:\n");
         let commits = &resources.settings.commits;
         if commits.is_empty() {
             result.push_str("  \\(nothing\\)\n");
@@ -309,18 +326,33 @@ async fn list(bot: Bot, msg: Message) -> Result<(), CommandError> {
             result.push_str(&format!(
                 "  \\- `{}`\n    {}\n",
                 markdown::escape(commit),
-                markdown::escape(&settings.comment)
+                settings.notify.description_markdown()
             ));
         }
-        result.push_str("  branches:\n");
+        result.push_str("  *pull requests*:\n");
+        let pull_requests = &resources.settings.pull_requests;
+        if pull_requests.is_empty() {
+            result.push_str("  \\(nothing\\)\n");
+        }
+        for (pr, settings) in pull_requests {
+            result.push_str(&format!(
+                "  \\- `{pr}`\n    {}\n",
+                settings.notify.description_markdown()
+            ));
+        }
+        result.push_str("  *branches*:\n");
         let branches = &resources.settings.branches;
         if branches.is_empty() {
             result.push_str("  \\(nothing\\)\n");
         }
-        for branch in branches.keys() {
-            result.push_str(&format!("  \\- `{}`\n", markdown::escape(branch)));
+        for (branch, settings) in branches {
+            result.push_str(&format!(
+                "  \\- `{}`\n    {}\n",
+                markdown::escape(branch),
+                settings.notify.description_markdown()
+            ));
         }
-        result.push_str("  conditions:\n");
+        result.push_str("  *conditions*:\n");
         let conditions = &resources.settings.conditions;
         if conditions.is_empty() {
             result.push_str("  \\(nothing\\)\n");
@@ -347,14 +379,27 @@ async fn repo_add(bot: Bot, msg: Message, name: String, url: String) -> Result<(
     if repo::exists(chat, &name)? {
         return Err(error::Error::RepoExists(name).into());
     }
-    reply_to_msg(&bot, &msg, format!("start clone into '{name}'")).await?;
-    let output = repo::create(lock, &url).await?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    reply_to_msg(&bot, &msg, format!("start cloning into '{name}'")).await?;
+    repo::create(lock, &url).await?;
+
+    let github_info = Url::parse(&url)
+        .ok()
+        .and_then(|u| GitHubInfo::parse_from_url(u).ok());
+    let settings = {
+        let lock = prepare_lock(chat, &name)?;
+        let settings = {
+            let mut resources = lock.resources.lock().unwrap();
+            resources.settings.github_info = github_info;
+            resources.settings.clone()
+        };
+        lock.save_resources()?;
+        settings
+    };
+
     reply_to_msg(
         &bot,
         &msg,
-        format!("repository '{name}' added\nstdout:\n{stdout}\nstderr:\n{stderr}"),
+        format!("repository '{name}' added, settings:\n{settings:#?}"),
     )
     .await?;
     Ok(())
@@ -411,56 +456,27 @@ async fn commit_add(
     repo: String,
     hash: String,
     comment: String,
+    url: Option<Url>,
 ) -> Result<(), CommandError> {
     let lock = prepare_lock(msg.chat.id, &repo)?;
-    let settings = CommitSettings { comment };
+    let subscribers = subscriber_from_msg(&msg).into_iter().collect();
+    let settings = CommitSettings {
+        url,
+        notify: NotifySettings {
+            comment,
+            subscribers,
+        },
+    };
     match repo::commit_add(lock, &hash, settings).await {
         Ok(()) => {
             reply_to_msg(&bot, &msg, format!("commit {hash} added")).await?;
-        },
+        }
         Err(Error::CommitExists(_)) => {
             // do nothing
-        },
+        }
         Err(e) => return Err(e.into()),
     }
     commit_check(bot, msg, repo, hash).await
-}
-
-async fn pr_add(
-    bot: Bot,
-    msg: Message,
-    repo: String,
-    pr_id: u64,
-    comment: Option<String>,
-) -> Result<(), CommandError> {
-    let github_info = {
-        let lock = prepare_lock(msg.chat.id, &repo)?;
-        let resources = lock.resources.lock().unwrap();
-        resources
-            .settings
-            .github_info
-            .clone()
-            .ok_or(Error::NoGitHubInfo(repo.clone()))?
-    };
-    let pr = github::get_pr(&github_info, pr_id).await?;
-    let commit = pr
-        .merge_commit_sha
-        .ok_or(Error::NoMergeCommit { github_info, pr_id })?;
-    let at = match msg.from() {
-        None => "".to_string(),
-        Some(u) => match &u.username {
-            None => "".to_string(),
-            Some(name) => format!("\n\n@{name}"),
-        },
-    };
-    let comment = format!(
-        "{url}
-{title}{comment}{at}",
-        url = pr.html_url.map(|u| u.to_string()).unwrap_or(pr.url),
-        title = pr.title.as_deref().unwrap_or("untitled"),
-        comment = comment.map(|c| format!("\n{c}")).unwrap_or("".to_string()),
-    );
-    commit_add(bot, msg, repo, commit, comment).await
 }
 
 async fn commit_remove(
@@ -501,6 +517,65 @@ async fn commit_check(
     Ok(())
 }
 
+async fn pr_add(
+    bot: Bot,
+    msg: Message,
+    repo: String,
+    pr_id: u64,
+    optional_comment: Option<String>,
+) -> Result<(), CommandError> {
+    let lock = prepare_lock(msg.chat.id, &repo)?;
+    let github_info = {
+        let resources = lock.resources.lock().unwrap();
+        resources
+            .settings
+            .github_info
+            .clone()
+            .ok_or(Error::NoGitHubInfo(repo.clone()))?
+    };
+    let url_str = format!("https://github.com/{github_info}/pull/{pr_id}");
+    let url = Url::parse(&url_str).map_err(Error::UrlParse)?;
+    let subscribers = subscriber_from_msg(&msg).into_iter().collect();
+    let comment = optional_comment.unwrap_or_default();
+    let settings = PullRequestSettings {
+        url,
+        notify: NotifySettings {
+            comment,
+            subscribers,
+        },
+    };
+    repo::pr_add(lock, pr_id, settings).await?;
+    // lock already dropped in repo::pr_add
+    pr_check(bot, msg, repo, pr_id).await
+}
+
+async fn pr_check(bot: Bot, msg: Message, repo: String, pr_id: u64) -> Result<(), CommandError> {
+    let lock = prepare_lock(msg.chat.id, &repo)?;
+    match repo::pr_check(lock, pr_id).await? {
+        Some(commit) => {
+            reply_to_msg(
+                &bot,
+                &msg,
+                format!("pr {pr_id} has been merged, commit `{commit}` added"),
+            )
+            .await?;
+            // lock already dropped in repo::pr_check
+            commit_check(bot, msg, repo, commit).await?;
+        }
+        None => {
+            reply_to_msg(&bot, &msg, format!("pr {pr_id} has not been merged yet")).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn pr_remove(bot: Bot, msg: Message, repo: String, pr_id: u64) -> Result<(), CommandError> {
+    let lock = prepare_lock(msg.chat.id, &repo)?;
+    repo::pr_remove(lock, pr_id).await?;
+    reply_to_msg(&bot, &msg, format!("pr {pr_id} removed")).await?;
+    Ok(())
+}
+
 async fn branch_add(
     bot: Bot,
     msg: Message,
@@ -508,7 +583,9 @@ async fn branch_add(
     branch: String,
 ) -> Result<(), CommandError> {
     let lock = prepare_lock(msg.chat.id, &repo)?;
-    let settings = BranchSettings {};
+    let settings = BranchSettings {
+        notify: Default::default(),
+    };
     repo::branch_add(lock, &branch, settings).await?;
     branch_check(bot, msg, repo, branch).await
 }
@@ -603,7 +680,7 @@ fn prepare_lock(chat: ChatId, repo: &str) -> Result<TaskGuard, error::Error> {
         chat,
         repo: repo.to_owned(),
     };
-    match task.lock() {
+    match task.try_lock() {
         Ok(Some(lock)) => Ok(lock),
         Ok(None) => {
             log::info!("ignored command from {} on '{}'", chat, repo);
@@ -644,10 +721,7 @@ fn commit_check_message(
         ),
     };
     format!(
-        "{repo}/`{commit}`
-
-*comment*:
-{comment}
+        "{repo}/`{commit}`{notify}
 
 *new* branches containing this commit:
 {new}
@@ -658,16 +732,30 @@ fn commit_check_message(
 ",
         repo = markdown::escape(repo),
         commit = markdown::escape(commit),
-        comment = markdown::escape(&settings.comment),
+        notify = push_empty_line(&settings.notify.notify_markdown()),
         new = markdown_list(result.new.iter()),
         all = markdown_list(result.all.iter())
+    )
+}
+
+fn pr_merged_message(
+    repo: &str,
+    pr: u64,
+    settings: &PullRequestSettings,
+    commit: &String,
+) -> String {
+    format!(
+        "{repo}/{pr}
+        merged as `{commit}`{notify}
+",
+        notify = push_empty_line(&settings.notify.notify_markdown()),
     )
 }
 
 fn branch_check_message(
     repo: &str,
     branch: &str,
-    _settings: &BranchSettings,
+    settings: &BranchSettings,
     result: &BranchCheckResult,
 ) -> String {
     let status = if result.old == result.new {
@@ -688,11 +776,11 @@ fn branch_check_message(
     };
     format!(
         "{repo}/`{branch}`
-{status}
+{status}{notify}
 ",
         repo = markdown::escape(repo),
         branch = markdown::escape(branch),
-        status = status
+        notify = push_empty_line(&settings.notify.notify_markdown()),
     )
 }
 
@@ -720,19 +808,28 @@ fn markdown_optional_commit(commit: Option<&str>) -> String {
     }
 }
 
-fn markdown_list<Iter, T>(s: Iter) -> String
+fn markdown_list<Iter, T>(items: Iter) -> String
 where
     Iter: Iterator<Item = T>,
     T: fmt::Display,
 {
-    let mut res: String = s
-        .map(|t| format!("{t}"))
-        .map(|t| format!("\\- `{}`\n", markdown::escape(&t)))
-        .collect();
-    if res.is_empty() {
+    let mut result = String::new();
+    for item in items {
+        result.push_str(&format!("\\- `{}`\n", markdown::escape(&item.to_string())));
+    }
+    if result.is_empty() {
         "\u{2205}".to_owned() // the empty set symbol
     } else {
-        assert_eq!(res.pop(), Some('\n'));
-        res
+        assert_eq!(result.pop(), Some('\n'));
+        result
+    }
+}
+
+fn subscriber_from_msg(msg: &Message) -> Option<Subscriber> {
+    match msg.from() {
+        None => None,
+        Some(u) => u.username.as_ref().map(|name| Subscriber::Telegram {
+            username: name.to_string(),
+        }),
     }
 }

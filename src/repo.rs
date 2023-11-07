@@ -13,14 +13,18 @@ use std::process::{Command, Output};
 use teloxide::types::ChatId;
 use tokio::task::{self, spawn_blocking};
 
-use crate::cache;
 use crate::condition::Condition;
 use crate::error::Error;
+use crate::github::GitHubInfo;
 use crate::repo::results::CommitResults;
 use crate::repo::tasks::TaskRef;
+use crate::utils::push_empty_line;
+use crate::{cache, github};
 
 use self::results::BranchResults;
-use self::settings::{BranchSettings, CommitSettings, ConditionSettings};
+use self::settings::{
+    BranchSettings, CommitSettings, ConditionSettings, NotifySettings, PullRequestSettings,
+};
 use self::tasks::{Resources, TaskGuard, TaskGuardBare};
 
 static ORIGIN_RE: once_cell::sync::Lazy<Regex> =
@@ -53,8 +57,16 @@ pub async fn create(lock: TaskGuardBare, url: &str) -> Result<Output, Error> {
     let output = {
         let url = url.to_owned();
         let path = repo_path.clone();
-        task::spawn_blocking(move || Command::new("git").arg("clone").arg(url).arg(path).output())
-            .await??
+        task::spawn_blocking(move || {
+            Command::new("git")
+                .arg("clone")
+                .arg(url)
+                .arg(path)
+                // blobless clone
+                .arg("--filter=tree:0")
+                .output()
+        })
+        .await??
     };
     if !output.status.success() {
         return Err(Error::GitClone {
@@ -508,4 +520,84 @@ pub async fn condition_trigger(
     Ok(ConditionCheckResult {
         removed: remove_list,
     })
+}
+
+pub async fn pr_add(lock: TaskGuard, id: u64, settings: PullRequestSettings) -> Result<(), Error> {
+    {
+        let mut resources = lock.resources.lock().unwrap();
+        if resources.settings.pull_requests.contains_key(&id) {
+            return Err(Error::PullRequestExists(id));
+        }
+        resources.settings.pull_requests.insert(id, settings);
+    }
+    lock.save_resources()?;
+    Ok(())
+}
+
+pub async fn pr_remove(lock: TaskGuard, id: u64) -> Result<(), Error> {
+    {
+        let mut resources = lock.resources.lock().unwrap();
+
+        if !resources.settings.pull_requests.contains_key(&id) {
+            return Err(Error::UnknownPullRequest(id));
+        }
+
+        resources.settings.pull_requests.remove(&id);
+    }
+    lock.save_resources()?;
+    Ok(())
+}
+
+pub async fn pr_check(lock: TaskGuard, id: u64) -> Result<Option<String>, Error> {
+    let github_info = {
+        let resources = lock.resources.lock().unwrap();
+        resources
+            .settings
+            .github_info
+            .clone()
+            .ok_or(Error::NoGitHubInfo(lock.repo_name().to_string()))?
+    };
+    if github::is_merged(&github_info, id).await? {
+        let settings = {
+            let mut resources = lock.resources.lock().unwrap();
+            resources
+                .settings
+                .pull_requests
+                .remove(&id)
+                .ok_or(Error::UnknownPullRequest(id))?
+        };
+        let commit = merged_pr_to_commit(lock, github_info, id, settings).await?;
+        Ok(Some(commit))
+    } else {
+        Ok(None)
+    }
+}
+
+pub async fn merged_pr_to_commit(
+    lock: TaskGuard,
+    github_info: GitHubInfo,
+    pr_id: u64,
+    settings: PullRequestSettings,
+) -> Result<String, Error> {
+    let pr = github::get_pr(&github_info, pr_id).await?;
+    let commit = pr
+        .merge_commit_sha
+        .ok_or(Error::NoMergeCommit { github_info, pr_id })?;
+    let comment = format!(
+        "{title}{comment}",
+        title = pr.title.as_deref().unwrap_or("untitled"),
+        comment = push_empty_line(&settings.notify.comment),
+    );
+    let commit_settings = CommitSettings {
+        url: Some(settings.url),
+        notify: NotifySettings {
+            comment,
+            subscribers: settings.notify.subscribers,
+        },
+    };
+
+    match commit_add(lock, &commit, commit_settings).await {
+        Ok(()) | Err(Error::CommitExists(_)) => Ok(commit),
+        Err(e) => Err(e),
+    }
 }
