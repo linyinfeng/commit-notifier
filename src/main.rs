@@ -789,7 +789,7 @@ fn commit_check_message(
         ),
     };
     format!(
-        "{repo}/`{commit}`{notify}
+        "{repo}/`{commit}`{url}{notify}
 
 *new* branches containing this commit:
 {new}
@@ -800,6 +800,11 @@ fn commit_check_message(
 ",
         repo = markdown::escape(repo),
         commit = markdown::escape(commit),
+        url = settings
+            .url
+            .as_ref()
+            .map(|u| format!("\n{}", markdown::escape(u.as_str())))
+            .unwrap_or_default(),
         notify = push_empty_line(&settings.notify.notify_markdown()),
         new = markdown_list(result.new.iter()),
         all = markdown_list(result.all.iter())
