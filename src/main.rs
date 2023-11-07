@@ -359,7 +359,7 @@ async fn list(bot: Bot, msg: Message) -> Result<(), CommandError> {
         for (pr, settings) in pull_requests {
             result.push_str(&format!(
                 "  \\- `{pr}`\n    {}\n",
-                settings.notify.description_markdown()
+                markdown::escape(settings.url.as_str())
             ));
         }
         result.push_str("  *branches*:\n");
@@ -367,12 +367,8 @@ async fn list(bot: Bot, msg: Message) -> Result<(), CommandError> {
         if branches.is_empty() {
             result.push_str("  \\(nothing\\)\n");
         }
-        for (branch, settings) in branches {
-            result.push_str(&format!(
-                "  \\- `{}`\n    {}\n",
-                markdown::escape(branch),
-                settings.notify.description_markdown()
-            ));
+        for branch in branches.keys() {
+            result.push_str(&format!("  \\- `{}`\n", markdown::escape(branch)));
         }
         result.push_str("  *conditions*:\n");
         let conditions = &settings.conditions;
