@@ -10,6 +10,7 @@ mod utils;
 use std::env;
 use std::fmt;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use chrono::Utc;
 use condition::GeneralCondition;
@@ -24,8 +25,6 @@ use repo::settings::NotifySettings;
 use repo::settings::PullRequestSettings;
 use repo::settings::Subscriber;
 use repo::tasks::Task;
-use repo::tasks::TaskGuard;
-use repo::tasks::TaskGuardBare;
 use repo::BranchCheckResult;
 use teloxide::prelude::*;
 use teloxide::types::ParseMode;
@@ -35,6 +34,8 @@ use tokio::time::sleep;
 use url::Url;
 use utils::reply_to_msg;
 
+use crate::repo::tasks::Resources;
+use crate::repo::tasks::ResourcesMap;
 use crate::utils::push_empty_line;
 
 #[derive(BotCommands, Clone, Debug)]
@@ -148,6 +149,10 @@ async fn run() {
         _ = schedule(bot.clone()) => { },
         _ = BCommand::repl(bot, answer) => { },
     }
+
+    if let Err(e) = ResourcesMap::clear().await {
+        log::error!("failed to clear resources map: {e}");
+    }
 }
 
 fn octocrab_initialize() {
@@ -210,19 +215,16 @@ async fn update(bot: Bot) -> Result<(), teloxide::RequestError> {
                 chat,
                 repo: repo.to_owned(),
             };
-            let lock = match task.try_lock() {
-                Ok(Some(l)) => l,
-                Ok(None) => {
-                    log::info!("another task running on ({chat}, {repo}), skip");
-                    continue;
-                }
+
+            let resources = match ResourcesMap::get(&task).await {
+                Ok(r) => r,
                 Err(e) => {
-                    log::error!("failed to acquire task guard in update: {e}");
+                    log::warn!("failed to open resources of ({chat}, {repo}), skip: {e}");
                     continue;
                 }
             };
 
-            if let Err(e) = repo::fetch(lock.clone()).await {
+            if let Err(e) = repo::fetch(resources.clone()).await {
                 log::warn!("failed to fetch ({chat}, {repo}), skip: {e}");
                 continue;
             }
@@ -230,11 +232,11 @@ async fn update(bot: Bot) -> Result<(), teloxide::RequestError> {
             // check pull requests of the repo
             // check before commit
             let pull_requests = {
-                let resources = lock.resources.lock().unwrap();
-                resources.settings.pull_requests.clone()
+                let settings = resources.settings.read().await;
+                settings.pull_requests.clone()
             };
             for (pr, settings) in pull_requests {
-                let result = match repo::pr_check(lock.clone(), pr).await {
+                let result = match repo::pr_check(resources.clone(), pr).await {
                     Err(e) => {
                         log::warn!("failed to check pr ({chat}, {repo}, {pr}): {e}");
                         continue;
@@ -252,11 +254,11 @@ async fn update(bot: Bot) -> Result<(), teloxide::RequestError> {
 
             // check branches of the repo
             let branches = {
-                let resources = lock.resources.lock().unwrap();
-                resources.settings.branches.clone()
+                let settings = resources.settings.read().await;
+                settings.branches.clone()
             };
             for (branch, settings) in branches {
-                let result = match repo::branch_check(lock.clone(), &branch).await {
+                let result = match repo::branch_check(resources.clone(), &branch).await {
                     Err(e) => {
                         log::warn!("failed to check branch ({chat}, {repo}, {branch}): {e}");
                         continue;
@@ -274,11 +276,11 @@ async fn update(bot: Bot) -> Result<(), teloxide::RequestError> {
 
             // check commits of the repo
             let commits = {
-                let resources = lock.resources.lock().unwrap();
-                resources.settings.commits.clone()
+                let settings = resources.settings.read().await;
+                settings.commits.clone()
             };
             for (commit, settings) in commits {
-                let result = match repo::commit_check(lock.clone(), &commit).await {
+                let result = match repo::commit_check(resources.clone(), &commit).await {
                     Err(e) => {
                         log::warn!("failed to check commit ({chat}, {repo}, {commit}): {e}",);
                         continue;
@@ -309,16 +311,18 @@ async fn list(bot: Bot, msg: Message) -> Result<(), CommandError> {
         result.push_str(&markdown::escape(&repo));
         result.push_str("*\n");
 
-        let lock = (Task {
+        let task = Task {
             chat,
             repo: repo.clone(),
-        })
-        .try_lock()?
-        .ok_or(error::Error::AnotherTaskRunning(repo))?;
-        let resources = lock.resources.lock().unwrap();
+        };
+        let resources = ResourcesMap::get(&task).await?;
+        let settings = {
+            let locked = resources.settings.read().await;
+            locked.clone()
+        };
 
         result.push_str("  *commits*:\n");
-        let commits = &resources.settings.commits;
+        let commits = &settings.commits;
         if commits.is_empty() {
             result.push_str("  \\(nothing\\)\n");
         }
@@ -330,7 +334,7 @@ async fn list(bot: Bot, msg: Message) -> Result<(), CommandError> {
             ));
         }
         result.push_str("  *pull requests*:\n");
-        let pull_requests = &resources.settings.pull_requests;
+        let pull_requests = &settings.pull_requests;
         if pull_requests.is_empty() {
             result.push_str("  \\(nothing\\)\n");
         }
@@ -341,7 +345,7 @@ async fn list(bot: Bot, msg: Message) -> Result<(), CommandError> {
             ));
         }
         result.push_str("  *branches*:\n");
-        let branches = &resources.settings.branches;
+        let branches = &settings.branches;
         if branches.is_empty() {
             result.push_str("  \\(nothing\\)\n");
         }
@@ -353,7 +357,7 @@ async fn list(bot: Bot, msg: Message) -> Result<(), CommandError> {
             ));
         }
         result.push_str("  *conditions*:\n");
-        let conditions = &resources.settings.conditions;
+        let conditions = &settings.conditions;
         if conditions.is_empty() {
             result.push_str("  \\(nothing\\)\n");
         }
@@ -375,26 +379,29 @@ async fn list(bot: Bot, msg: Message) -> Result<(), CommandError> {
 
 async fn repo_add(bot: Bot, msg: Message, name: String, url: String) -> Result<(), CommandError> {
     let chat = msg.chat.id;
-    let lock = prepare_lock_bare(chat, &name)?;
     if repo::exists(chat, &name)? {
         return Err(error::Error::RepoExists(name).into());
     }
     reply_to_msg(&bot, &msg, format!("start cloning into '{name}'")).await?;
-    repo::create(lock, &url).await?;
+
+    let task = Task {
+        chat,
+        repo: name.clone(),
+    };
+    let path = task.paths()?;
+    repo::create(&name, path.repo, &url).await?;
+
+    let resources = ResourcesMap::get(&task).await?;
 
     let github_info = Url::parse(&url)
         .ok()
         .and_then(|u| GitHubInfo::parse_from_url(u).ok());
     let settings = {
-        let lock = prepare_lock(chat, &name)?;
-        let settings = {
-            let mut resources = lock.resources.lock().unwrap();
-            resources.settings.github_info = github_info;
-            resources.settings.clone()
-        };
-        lock.save_resources()?;
-        settings
+        let mut locked = resources.settings.write().await;
+        locked.github_info = github_info;
+        locked.clone()
     };
+    resources.save_settings().await?;
 
     reply_to_msg(
         &bot,
@@ -413,23 +420,23 @@ async fn repo_edit(
     github_info: Option<GitHubInfo>,
     clear_github_info: bool,
 ) -> Result<(), CommandError> {
-    let lock = prepare_lock(msg.chat.id, &name)?;
+    let resources = resources_helper(&msg, &name).await?;
     let new_settings = {
-        let mut resources = lock.resources.lock().unwrap();
+        let mut locked = resources.settings.write().await;
         if let Some(r) = branch_regex {
             // ensure regex is valid
             let _: Regex = Regex::new(&r).map_err(error::Error::from)?;
-            resources.settings.branch_regex = r;
+            locked.branch_regex = r;
         }
         if let Some(info) = github_info {
-            resources.settings.github_info = Some(info);
+            locked.github_info = Some(info);
         }
         if clear_github_info {
-            resources.settings.github_info = None;
+            locked.github_info = None;
         }
-        resources.settings.clone()
+        locked.clone()
     };
-    lock.save_resources()?;
+    resources.save_settings().await?;
     reply_to_msg(
         &bot,
         &msg,
@@ -440,12 +447,11 @@ async fn repo_edit(
 }
 
 async fn repo_remove(bot: Bot, msg: Message, name: String) -> Result<(), CommandError> {
-    let chat = msg.chat.id;
-    let lock = prepare_lock_bare(chat, &name)?;
-    if !repo::exists(chat, &name)? {
+    let resources = resources_helper(&msg, &name).await?;
+    if !repo::exists(resources.task.chat, &name)? {
         return Err(error::Error::UnknownRepository(name).into());
     }
-    repo::remove(lock).await?;
+    repo::remove(resources).await?;
     reply_to_msg(&bot, &msg, format!("repository '{name}' removed")).await?;
     Ok(())
 }
@@ -458,7 +464,7 @@ async fn commit_add(
     comment: String,
     url: Option<Url>,
 ) -> Result<(), CommandError> {
-    let lock = prepare_lock(msg.chat.id, &repo)?;
+    let resources = resources_helper(&msg, &repo).await?;
     let subscribers = subscriber_from_msg(&msg).into_iter().collect();
     let settings = CommitSettings {
         url,
@@ -467,7 +473,7 @@ async fn commit_add(
             subscribers,
         },
     };
-    match repo::commit_add(lock, &hash, settings).await {
+    match repo::commit_add(resources, &hash, settings).await {
         Ok(()) => {
             reply_to_msg(&bot, &msg, format!("commit {hash} added")).await?;
         }
@@ -485,8 +491,8 @@ async fn commit_remove(
     repo: String,
     hash: String,
 ) -> Result<(), CommandError> {
-    let lock = prepare_lock(msg.chat.id, &repo)?;
-    repo::commit_remove(lock, &hash).await?;
+    let resources = resources_helper(&msg, &repo).await?;
+    repo::commit_remove(resources, &hash).await?;
     reply_to_msg(&bot, &msg, format!("commit {hash} removed")).await?;
     Ok(())
 }
@@ -497,18 +503,17 @@ async fn commit_check(
     repo: String,
     hash: String,
 ) -> Result<(), CommandError> {
-    let lock = prepare_lock(msg.chat.id, &repo)?;
-    repo::fetch(lock.clone()).await?;
+    let resources = resources_helper(&msg, &repo).await?;
+    repo::fetch(resources.clone()).await?;
     let commit_settings = {
-        let resources = lock.resources.lock().unwrap();
-        resources
-            .settings
+        let settings = resources.settings.read().await;
+        settings
             .commits
             .get(&hash)
             .ok_or_else(|| error::Error::UnknownCommit(hash.clone()))?
             .clone()
     };
-    let result = repo::commit_check(lock, &hash).await?;
+    let result = repo::commit_check(resources, &hash).await?;
     let reply = commit_check_message(&repo, &hash, &commit_settings, &result);
     reply_to_msg(&bot, &msg, reply)
         .parse_mode(ParseMode::MarkdownV2)
@@ -524,11 +529,10 @@ async fn pr_add(
     pr_id: u64,
     optional_comment: Option<String>,
 ) -> Result<(), CommandError> {
-    let lock = prepare_lock(msg.chat.id, &repo)?;
+    let resources = resources_helper(&msg, &repo).await?;
     let github_info = {
-        let resources = lock.resources.lock().unwrap();
-        resources
-            .settings
+        let settings = resources.settings.read().await;
+        settings
             .github_info
             .clone()
             .ok_or(Error::NoGitHubInfo(repo.clone()))?
@@ -544,22 +548,21 @@ async fn pr_add(
             subscribers,
         },
     };
-    repo::pr_add(lock, pr_id, settings).await?;
-    // lock already dropped in repo::pr_add
+    repo::pr_add(resources, pr_id, settings).await?;
     pr_check(bot, msg, repo, pr_id).await
 }
 
 async fn pr_check(bot: Bot, msg: Message, repo: String, pr_id: u64) -> Result<(), CommandError> {
-    let lock = prepare_lock(msg.chat.id, &repo)?;
-    match repo::pr_check(lock, pr_id).await? {
+    let resources = resources_helper(&msg, &repo).await?;
+    match repo::pr_check(resources, pr_id).await? {
         Some(commit) => {
             reply_to_msg(
                 &bot,
                 &msg,
-                format!("pr {pr_id} has been merged, commit `{commit}` added"),
+                format!("pr {pr_id} has been merged\ncommit `{commit}` added"),
             )
+            .parse_mode(ParseMode::MarkdownV2)
             .await?;
-            // lock already dropped in repo::pr_check
             commit_check(bot, msg, repo, commit).await?;
         }
         None => {
@@ -570,8 +573,8 @@ async fn pr_check(bot: Bot, msg: Message, repo: String, pr_id: u64) -> Result<()
 }
 
 async fn pr_remove(bot: Bot, msg: Message, repo: String, pr_id: u64) -> Result<(), CommandError> {
-    let lock = prepare_lock(msg.chat.id, &repo)?;
-    repo::pr_remove(lock, pr_id).await?;
+    let resources = resources_helper(&msg, &repo).await?;
+    repo::pr_remove(resources, pr_id).await?;
     reply_to_msg(&bot, &msg, format!("pr {pr_id} removed")).await?;
     Ok(())
 }
@@ -582,11 +585,11 @@ async fn branch_add(
     repo: String,
     branch: String,
 ) -> Result<(), CommandError> {
-    let lock = prepare_lock(msg.chat.id, &repo)?;
+    let resources = resources_helper(&msg, &repo).await?;
     let settings = BranchSettings {
         notify: Default::default(),
     };
-    repo::branch_add(lock, &branch, settings).await?;
+    repo::branch_add(resources, &branch, settings).await?;
     branch_check(bot, msg, repo, branch).await
 }
 
@@ -596,8 +599,8 @@ async fn branch_remove(
     repo: String,
     branch: String,
 ) -> Result<(), CommandError> {
-    let lock = prepare_lock(msg.chat.id, &repo)?;
-    repo::branch_remove(lock, &branch).await?;
+    let resources = resources_helper(&msg, &repo).await?;
+    repo::branch_remove(resources, &branch).await?;
     reply_to_msg(&bot, &msg, format!("branch {branch} removed")).await?;
     Ok(())
 }
@@ -608,18 +611,17 @@ async fn branch_check(
     repo: String,
     branch: String,
 ) -> Result<(), CommandError> {
-    let lock = prepare_lock(msg.chat.id, &repo)?;
-    repo::fetch(lock.clone()).await?;
+    let resources = resources_helper(&msg, &repo).await?;
+    repo::fetch(resources.clone()).await?;
     let branch_settings = {
-        let resources = lock.resources.lock().unwrap();
-        resources
-            .settings
+        let settings = resources.settings.read().await;
+        settings
             .branches
             .get(&branch)
             .ok_or_else(|| error::Error::UnknownBranch(branch.clone()))?
             .clone()
     };
-    let result = repo::branch_check(lock, &branch).await?;
+    let result = repo::branch_check(resources, &branch).await?;
     let reply = branch_check_message(&repo, &branch, &branch_settings, &result);
     reply_to_msg(&bot, &msg, reply)
         .parse_mode(ParseMode::MarkdownV2)
@@ -636,11 +638,11 @@ async fn condition_add(
     kind: condition::Kind,
     expr: String,
 ) -> Result<(), CommandError> {
-    let lock = prepare_lock(msg.chat.id, &repo)?;
+    let resources = resources_helper(&msg, &repo).await?;
     let settings = ConditionSettings {
         condition: GeneralCondition::parse(kind, &expr)?,
     };
-    repo::condition_add(lock, &identifier, settings).await?;
+    repo::condition_add(resources, &identifier, settings).await?;
     reply_to_msg(&bot, &msg, format!("condition {identifier} added")).await?;
     condition_trigger(bot, msg, repo, identifier).await
 }
@@ -651,8 +653,8 @@ async fn condition_remove(
     repo: String,
     identifier: String,
 ) -> Result<(), CommandError> {
-    let lock = prepare_lock(msg.chat.id, &repo)?;
-    repo::condition_remove(lock, &identifier).await?;
+    let resources = resources_helper(&msg, &repo).await?;
+    repo::condition_remove(resources, &identifier).await?;
     reply_to_msg(&bot, &msg, format!("condition {identifier} removed")).await?;
     Ok(())
 }
@@ -663,8 +665,8 @@ async fn condition_trigger(
     repo: String,
     identifier: String,
 ) -> Result<(), CommandError> {
-    let lock = prepare_lock(msg.chat.id, &repo)?;
-    let result = repo::condition_trigger(lock, &identifier).await?;
+    let resources = resources_helper(&msg, &repo).await?;
+    let result = repo::condition_trigger(resources, &identifier).await?;
     reply_to_msg(
         &bot,
         &msg,
@@ -675,36 +677,12 @@ async fn condition_trigger(
     Ok(())
 }
 
-fn prepare_lock(chat: ChatId, repo: &str) -> Result<TaskGuard, error::Error> {
-    let task = repo::tasks::Task {
-        chat,
-        repo: repo.to_owned(),
+async fn resources_helper(msg: &Message, repo: &str) -> Result<Arc<Resources>, Error> {
+    let task = Task {
+        chat: msg.chat.id,
+        repo: repo.to_string(),
     };
-    match task.try_lock() {
-        Ok(Some(lock)) => Ok(lock),
-        Ok(None) => {
-            log::info!("ignored command from {} on '{}'", chat, repo);
-            Err(error::Error::AnotherTaskRunning(repo.to_owned()))
-        }
-        Err(e) => {
-            log::error!("failed to acquire task guard in update: {}", e);
-            Err(e)
-        }
-    }
-}
-
-fn prepare_lock_bare(chat: ChatId, repo: &str) -> Result<TaskGuardBare, error::Error> {
-    let task = repo::tasks::Task {
-        chat,
-        repo: repo.to_owned(),
-    };
-    match task.try_lock_bare()? {
-        Some(lock) => Ok(lock),
-        None => {
-            log::info!("ignored command from {} on '{}'", chat, repo);
-            Err(error::Error::AnotherTaskRunning(repo.to_owned()))
-        }
-    }
+    ResourcesMap::get(&task).await
 }
 
 fn commit_check_message(

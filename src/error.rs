@@ -2,6 +2,7 @@ use std::ffi::OsString;
 
 use teloxide::prelude::*;
 use thiserror::Error;
+use tokio::sync::Mutex;
 
 use crate::github::GitHubInfo;
 
@@ -15,10 +16,16 @@ pub enum Error {
     Clap(#[from] clap::Error),
     #[error("repository '{0}' already exists")]
     RepoExists(String),
-    #[error("another task is running on repository '{0}', please wait")]
-    AnotherTaskRunning(String),
-    #[error("cache database error: {0}")]
+    #[error("create db connection pool error: {0}")]
+    CreatePool(#[from] deadpool_sqlite::CreatePoolError),
+    #[error("db connection pool error: {0}")]
+    Pool(#[from] deadpool_sqlite::PoolError),
+    #[error("db error: {0}")]
     DB(#[from] rusqlite::Error),
+    // `InteractError` is not `Sync`
+    // wrap it with `Mutex`
+    #[error("db interact error: {0:?}")]
+    DBInteract(Mutex<deadpool_sqlite::InteractError>),
     #[error("task join error: {0}")]
     TaskJoin(#[from] tokio::task::JoinError),
     #[error("invalid name: {0}")]
@@ -64,8 +71,6 @@ pub enum Error {
     ParseInt(#[from] std::num::ParseIntError),
     #[error("invalid regex: {0}")]
     Regex(#[from] regex::Error),
-    #[error("internal error: invalid try lock")]
-    TryLock,
     #[error("condition identifier already exists: '{0}'")]
     ConditionExists(String),
     #[error("unknown condition identifier: '{0}'")]

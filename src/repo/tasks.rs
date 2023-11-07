@@ -1,21 +1,93 @@
+use std::collections::BTreeMap;
 use std::fmt;
-use std::fs::{create_dir, File, OpenOptions};
+use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::time::Duration;
 
+use deadpool_sqlite::Pool;
 use fs4::FileExt;
 use git2::Repository;
-use rusqlite::Connection;
+use lockable::LockPool;
+use once_cell::sync::Lazy;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use teloxide::types::ChatId;
+use tokio::sync::{Mutex, RwLock};
+use tokio::time::sleep;
 
-use super::paths;
+use super::paths::{self, Paths};
 use super::results::Results;
 use super::settings::Settings;
 use crate::cache;
 use crate::error::Error;
+
+#[derive(Default)]
+pub struct ResourcesMap {
+    pub map: Lazy<Mutex<BTreeMap<Task, Arc<Resources>>>>,
+}
+
+pub static RESOURCES_MAP: ResourcesMap = ResourcesMap {
+    map: Lazy::new(|| Mutex::new(Default::default())),
+};
+
+impl ResourcesMap {
+    pub async fn get(task: &Task) -> Result<Arc<Resources>, Error> {
+        let mut map = RESOURCES_MAP.map.lock().await;
+        match map.get(task) {
+            Some(resources) => Ok(resources.clone()),
+            None => {
+                let resources = Arc::new(Resources::open(task).await?);
+                map.insert(task.clone(), resources.clone());
+                Ok(resources)
+            }
+        }
+    }
+
+    pub async fn remove<F>(task: &Task, cleanup: F) -> Result<(), Error>
+    where
+        F: FnOnce() -> Result<(), Error>,
+    {
+        let mut map = RESOURCES_MAP.map.lock().await;
+        if let Some(arc) = map.remove(task) {
+            wait_for_resources_drop(task, arc).await;
+            cleanup()?; // run before the map unlock
+            Ok(())
+        } else {
+            Err(Error::UnknownRepository(task.repo.clone()))
+        }
+    }
+
+    pub async fn clear() -> Result<(), Error> {
+        let mut map = RESOURCES_MAP.map.lock().await;
+        while let Some((task, resources)) = map.pop_first() {
+            wait_for_resources_drop(&task, resources).await;
+        }
+        Ok(())
+    }
+}
+
+pub async fn wait_for_resources_drop(task: &Task, mut arc: Arc<Resources>) {
+    loop {
+        match Arc::try_unwrap(arc) {
+            Ok(_resource) => {
+                // do nothing
+                // just drop
+                break;
+            }
+            Err(a) => {
+                arc = a;
+                log::info!(
+                    "removing {}/{}, waiting for existing jobs",
+                    task.chat,
+                    task.repo
+                );
+                sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+}
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
 pub struct Task {
@@ -24,155 +96,82 @@ pub struct Task {
 }
 
 impl Task {
-    // TODO: fine-grained lock
-    // TODO: add lock and lock_bare
-
-    // try lock and acquire all resources related to the task
-    pub fn try_lock(self) -> Result<Option<TaskGuard>, Error> {
-        self.try_lock_inner().map(|o| o.map(Arc::new))
-    }
-
-    // try lock only
-    pub fn try_lock_bare(self) -> Result<Option<TaskGuardBare>, Error> {
-        self.try_lock_bare_inner().map(|o| o.map(Arc::new))
-    }
-
-    pub fn ensure_lock_file(&self) -> Result<File, Error> {
-        let paths = paths::get(self.chat, &self.repo)?;
-        if !paths.outer.is_dir() {
-            create_dir(paths.outer)?;
-        }
-        if !paths.lock.is_file() {
-            File::create(&paths.lock)?;
-        }
-        Ok(File::open(&paths.lock)?)
-    }
-
-    pub fn try_lock_bare_inner(self) -> Result<Option<TaskGuardBareInner>, Error> {
-        let f = self.ensure_lock_file()?;
-        match f.try_lock_exclusive() {
-            Ok(()) => {
-                log::debug!("task locked: {:?}", self);
-                Ok(Some(TaskGuardBareInner {
-                    task: self,
-                    lock_file: f,
-                }))
-            }
-            Err(e) => {
-                log::debug!("failed to lock task: {e}");
-                Ok(None)
-            }
-        }
-    }
-
-    pub fn try_lock_inner(self) -> Result<Option<TaskGuardInner>, Error> {
-        match self.try_lock_bare_inner() {
-            Ok(None) => Ok(None),
-            Ok(Some(bare)) => {
-                let paths = paths::get(bare.chat(), bare.repo_name())?;
-
-                if !paths.outer.is_dir() {
-                    return Err(Error::UnknownRepository(bare.repo_name().to_owned()));
-                }
-
-                // load repo
-                let repo = Repository::open(&paths.repo)?;
-                // load cache
-                let cache_exists = paths.cache.is_file();
-                let cache = Connection::open(&paths.cache)?;
-                if !cache_exists {
-                    cache::initialize(&cache)?;
-                }
-                // load settings
-                let settings = read_json(&paths.settings)?;
-                // load results
-                let results = read_json(&paths.results)?;
-
-                let resources = Resources {
-                    repo,
-                    cache,
-                    settings,
-                    results,
-                };
-
-                Ok(Some(TaskGuardInner {
-                    bare,
-                    resources: Mutex::new(resources),
-                }))
-            }
-            Err(e) => Err(e),
-        }
+    pub fn paths(&self) -> Result<Paths, Error> {
+        paths::get(self.chat, &self.repo)
     }
 }
 
 pub struct Resources {
-    pub repo: Repository,
-    pub cache: Connection,
-    pub settings: Settings,
-    pub results: Results,
-}
-
-pub struct TaskGuardInner {
-    pub bare: TaskGuardBareInner,
-    pub resources: Mutex<Resources>,
-}
-
-pub struct TaskGuardBareInner {
     pub task: Task,
-    pub lock_file: File,
+    pub paths: Paths,
+    pub repo: Mutex<Repository>,
+    pub cache: Pool,
+    pub settings: RwLock<Settings>,
+    pub results: RwLock<Results>,
+
+    pub commit_locks: LockPool<String>,
+    pub branch_locks: LockPool<String>,
 }
 
-pub type TaskGuard = Arc<TaskGuardInner>;
-pub type TaskGuardBare = Arc<TaskGuardBareInner>;
+impl Resources {
+    pub async fn open(task: &Task) -> Result<Self, Error> {
+        let paths = task.paths()?;
 
-pub trait TaskRef {
-    fn task(&self) -> &Task;
-    fn chat(&self) -> ChatId {
-        self.task().chat
-    }
-    fn repo_name(&self) -> &str {
-        &self.task().repo
-    }
-    fn paths(&self) -> Result<paths::Paths, Error> {
-        let t = self.task();
-        paths::get(t.chat, &t.repo)
-    }
-}
+        if !paths.outer.is_dir() {
+            return Err(Error::UnknownRepository(task.repo.clone()));
+        }
 
-impl TaskRef for Task {
-    fn task(&self) -> &Task {
-        self
-    }
-}
+        // load repo
+        let repo = Mutex::new(Repository::open(&paths.repo)?);
+        // load cache
+        let cache_exists = paths.cache.is_file();
+        let cache_cfg = deadpool_sqlite::Config::new(&paths.cache);
+        let cache = cache_cfg.create_pool(deadpool_sqlite::Runtime::Tokio1)?;
+        if !cache_exists {
+            let conn = cache.get().await?;
+            conn.interact(|c| cache::initialize(c))
+                .await
+                .map_err(|e| Error::DBInteract(Mutex::new(e)))??;
+        }
+        // load settings
+        let settings = RwLock::new(read_json(&paths.settings)?);
+        // load results
+        let results = RwLock::new(read_json(&paths.results)?);
 
-impl TaskRef for TaskGuardInner {
-    fn task(&self) -> &Task {
-        &self.bare.task
+        Ok(Resources {
+            task: task.clone(),
+            paths,
+            repo,
+            cache,
+            settings,
+            results,
+            commit_locks: LockPool::new(),
+            branch_locks: LockPool::new(),
+        })
     }
-}
 
-impl TaskRef for TaskGuardBareInner {
-    fn task(&self) -> &Task {
-        &self.task
+    pub async fn save_settings(&self) -> Result<(), Error> {
+        let paths = self.task.paths()?;
+        let in_mem = self.settings.read().await;
+        write_json(&paths.settings, &*in_mem)
     }
-}
 
-impl TaskGuardInner {
-    pub fn save_resources(&self) -> Result<(), Error> {
-        let r = self.resources.try_lock().map_err(|_| Error::TryLock)?;
-        let paths = self.paths()?;
-        write_json(&paths.settings, &r.settings)?;
-        write_json(&paths.results, &r.results)?;
-        Ok(())
+    pub async fn save_results(&self) -> Result<(), Error> {
+        let paths = self.task.paths()?;
+        let in_mem = self.results.read().await;
+        write_json(&paths.results, &*in_mem)
     }
-}
 
-impl Drop for TaskGuardBareInner {
-    fn drop(&mut self) {
-        let result = self.lock_file.unlock();
-        if let Err(e) = result {
-            log::error!("failed to unlock task {:?}: {:?}", self.task(), e);
-        };
+    pub async fn cache(&self) -> Result<deadpool_sqlite::Object, Error> {
+        Ok(self.cache.get().await?)
+    }
+
+    pub async fn commit_lock(&self, key: String) -> impl Drop + '_ {
+        self.commit_locks.async_lock(key).await
+    }
+
+    pub async fn branch_lock(&self, key: String) -> impl Drop + '_ {
+        self.branch_locks.async_lock(key).await
     }
 }
 
@@ -187,6 +186,7 @@ where
     }
     log::debug!("read from file: {:?}", path);
     let file = File::open(path)?;
+    file.lock_shared()?; // close of file automatically release the lock
     let reader = BufReader::new(file);
     Ok(serde_json::from_reader(reader)?)
 }
@@ -202,6 +202,7 @@ where
         .create(true)
         .truncate(true)
         .open(path)?;
+    file.lock_exclusive()?;
     let writer = BufWriter::new(file);
     Ok(serde_json::to_writer_pretty(writer, rs)?)
 }

@@ -20,7 +20,7 @@ impl Display for GitHubInfo {
     }
 }
 
-pub static GITHUB_PATH_REGEX: Lazy<Regex> =
+pub static GITHUB_PATH_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new("^/([a-zA-Z0-9_.-]+)/([a-zA-Z0-9_.-]+?)(\\.git)?$").unwrap());
 
 impl GitHubInfo {
@@ -42,7 +42,7 @@ impl GitHubInfo {
         if host != url::Host::Domain("github.com") {
             return Err(url);
         }
-        let captures = GITHUB_PATH_REGEX
+        let captures = GITHUB_PATH_RE
             .captures(url.path())
             .ok_or_else(|| url.clone())?;
         let owner = captures

@@ -8,16 +8,18 @@ use regex::Regex;
 use rusqlite::Connection;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::ops::DerefMut;
+use std::path::PathBuf;
 use std::process::{Command, Output};
+use std::sync::Arc;
 use teloxide::types::ChatId;
-use tokio::task::{self, spawn_blocking};
+use tokio::sync::Mutex;
+use tokio::task;
 
 use crate::condition::Condition;
 use crate::error::Error;
 use crate::github::GitHubInfo;
 use crate::repo::results::CommitResults;
-use crate::repo::tasks::TaskRef;
+use crate::repo::tasks::ResourcesMap;
 use crate::utils::push_empty_line;
 use crate::{cache, github};
 
@@ -25,7 +27,7 @@ use self::results::BranchResults;
 use self::settings::{
     BranchSettings, CommitSettings, ConditionSettings, NotifySettings, PullRequestSettings,
 };
-use self::tasks::{Resources, TaskGuard, TaskGuardBare};
+use self::tasks::Resources;
 
 static ORIGIN_RE: once_cell::sync::Lazy<Regex> =
     once_cell::sync::Lazy::new(|| Regex::new("^origin/(.*)$").unwrap());
@@ -48,15 +50,12 @@ pub struct ConditionCheckResult {
     pub removed: Vec<String>,
 }
 
-pub async fn create(lock: TaskGuardBare, url: &str) -> Result<Output, Error> {
-    let paths = lock.paths()?;
-
-    let repo_path = paths.repo;
-    log::info!("try clone '{}' into {:?}", url, repo_path);
+pub async fn create(name: &str, path: PathBuf, url: &str) -> Result<Output, Error> {
+    log::info!("try clone '{}' into {:?}", url, path);
 
     let output = {
         let url = url.to_owned();
-        let path = repo_path.clone();
+        let path = path.clone();
         task::spawn_blocking(move || {
             Command::new("git")
                 .arg("clone")
@@ -71,20 +70,20 @@ pub async fn create(lock: TaskGuardBare, url: &str) -> Result<Output, Error> {
     if !output.status.success() {
         return Err(Error::GitClone {
             url: url.to_owned(),
-            name: lock.repo_name().to_owned(),
+            name: name.to_owned(),
             output,
         });
     }
 
-    let _repo = Repository::open(&repo_path)?;
-    log::info!("cloned git repository {:?}", repo_path);
+    let _repo = Repository::open(&path)?;
+    log::info!("cloned git repository {:?}", path);
 
     Ok(output)
 }
 
-pub async fn fetch(task: TaskGuard) -> Result<Output, Error> {
-    let paths = task.paths()?;
-    let repo_path = paths.repo;
+pub async fn fetch(resources: Arc<Resources>) -> Result<Output, Error> {
+    let paths = &resources.paths;
+    let repo_path = &paths.repo;
     log::info!("fetch {:?}", repo_path);
 
     let output = {
@@ -100,7 +99,7 @@ pub async fn fetch(task: TaskGuard) -> Result<Output, Error> {
     };
     if !output.status.success() {
         return Err(Error::GitFetch {
-            name: task.repo_name().to_owned(),
+            name: resources.task.repo.to_owned(),
             output,
         });
     }
@@ -113,149 +112,178 @@ pub fn exists(chat: ChatId, name: &str) -> Result<bool, Error> {
     Ok(path.is_dir())
 }
 
-pub async fn remove(lock: TaskGuardBare) -> Result<(), Error> {
-    let paths = lock.paths()?;
+pub async fn remove(resources: Arc<Resources>) -> Result<(), Error> {
+    let paths = resources.paths.clone();
+    let task = resources.task.clone();
 
-    log::info!("try remove repository outer directory: {:?}", paths.outer);
-    fs::remove_dir_all(&paths.outer)?;
-    log::info!("repository outer directory removed: {:?}", &paths.outer);
+    drop(resources); // drop resources in hand
+    ResourcesMap::remove(&task, || {
+        log::info!("try remove repository outer directory: {:?}", paths.outer);
+        fs::remove_dir_all(&paths.outer)?;
+        log::info!("repository outer directory removed: {:?}", &paths.outer);
+        Ok(())
+    })
+    .await?;
 
     Ok(())
 }
 
 pub async fn commit_add(
-    lock: TaskGuard,
+    resources: Arc<Resources>,
     commit: &str,
     settings: CommitSettings,
 ) -> Result<(), Error> {
+    let _guard = resources.commit_lock(commit.to_string()).await;
     {
-        let mut resources = lock.resources.lock().unwrap();
-        if resources.settings.commits.contains_key(commit) {
+        let mut locked = resources.settings.write().await;
+        if locked.commits.contains_key(commit) {
             return Err(Error::CommitExists(commit.to_owned()));
         }
-        resources
-            .settings
-            .commits
-            .insert(commit.to_owned(), settings);
+        locked.commits.insert(commit.to_owned(), settings);
     }
-    lock.save_resources()?;
-    Ok(())
+    resources.save_settings().await
 }
 
-pub async fn commit_remove(lock: TaskGuard, commit: &str) -> Result<(), Error> {
+pub async fn commit_remove(resources: Arc<Resources>, commit: &str) -> Result<(), Error> {
+    let _guard = resources.commit_lock(commit.to_string()).await;
     {
-        let mut resources = lock.resources.lock().unwrap();
-        commit_remove_guarded(&mut resources, commit)?;
+        let mut settings = resources.settings.write().await;
+        if !settings.commits.contains_key(commit) {
+            return Err(Error::UnknownCommit(commit.to_owned()));
+        }
+        settings.commits.remove(commit);
     }
-    lock.save_resources()?;
-    Ok(())
-}
+    resources.save_settings().await?;
 
-fn commit_remove_guarded(resources: &mut Resources, commit: &str) -> Result<(), Error> {
-    if !resources.settings.commits.contains_key(commit) {
-        return Err(Error::UnknownCommit(commit.to_owned()));
+    {
+        let mut results = resources.results.write().await;
+        results.commits.remove(commit);
     }
+    resources.save_results().await?;
 
-    resources.settings.commits.remove(commit);
-    resources.results.commits.remove(commit);
-    cache::remove(&resources.cache, commit)?;
-
+    {
+        let cache = resources.cache().await?;
+        let commit = commit.to_owned();
+        cache
+            .interact(move |conn| cache::remove(conn, &commit))
+            .await
+            .map_err(|e| Error::DBInteract(Mutex::new(e)))??;
+    }
     Ok(())
 }
 
 pub async fn commit_check(
-    task: TaskGuard,
+    resources: Arc<Resources>,
     target_commit: &str,
 ) -> Result<CommitCheckResult, Error> {
-    let target_commit = target_commit.to_owned();
-    spawn_blocking(move || {
-        let result = {
-            let mut guard = task.resources.lock().unwrap();
-            let resources = guard.deref_mut();
+    let result = {
+        let _guard = resources.commit_lock(target_commit.to_string()).await;
 
-            /* 2 phase */
+        /* 2 phase */
 
-            /* phase 1: commit check */
-            let mut branches_hit = BTreeSet::new();
+        /* phase 1: commit check */
 
-            let results = &mut resources.results;
+        // get settings
+        let settings = {
+            let s = resources.settings.read().await;
+            s.clone()
+        };
 
-            // save old results
-            let old_commit_results = match results.commits.remove(&target_commit) {
-                Some(bs) => bs,
-                None => Default::default(), // create default result
-            };
-            let branches_hit_old = old_commit_results.branches;
+        // get old results
+        let mut old_results = {
+            let r = resources.results.read().await;
+            r.clone()
+        };
+        let old_commit_results = match old_results.commits.remove(target_commit) {
+            Some(bs) => bs,
+            None => Default::default(), // create default result
+        };
+        let branches_hit_old = old_commit_results.branches;
 
-            let repo = &resources.repo;
-            let branches = repo.branches(Some(git2::BranchType::Remote))?;
-            let branch_regex = Regex::new(&resources.settings.branch_regex)?;
-            for branch_iter_res in branches {
-                let (branch, _) = branch_iter_res?;
-                // clean up name
-                let branch_name = match branch.name()?.and_then(branch_name_map_filter) {
-                    None => continue,
-                    Some(n) => n,
-                };
-                // skip if not match
-                if !branch_regex.is_match(branch_name) {
-                    continue;
-                }
-                let root = branch.get().peel_to_commit()?;
-                let str_root = format!("{}", root.id());
+        let branches_hit = {
+            let cache = resources.cache().await?;
+            let target_commit = target_commit.to_owned();
+            let resources = resources.clone();
+            cache
+                .interact(move |conn| -> Result<_, Error> {
+                    let repo = resources.repo.blocking_lock();
+                    let branches = repo.branches(Some(git2::BranchType::Remote))?;
+                    let branch_regex = Regex::new(&settings.branch_regex)?;
 
-                // build the cache
-                update_from_root(&resources.cache, &target_commit, repo, root)?;
+                    let mut branches_hit = BTreeSet::new();
+                    for branch_iter_res in branches {
+                        let (branch, _) = branch_iter_res?;
+                        // clean up name
+                        let branch_name = match branch.name()?.and_then(branch_name_map_filter) {
+                            None => continue,
+                            Some(n) => n,
+                        };
+                        // skip if not match
+                        if !branch_regex.is_match(branch_name) {
+                            continue;
+                        }
+                        let root = branch.get().peel_to_commit()?;
+                        let str_root = format!("{}", root.id());
 
-                // query result from cache
-                let hit_in_branch = cache::query(&resources.cache, &target_commit, &str_root)?
-                    .expect("update_from_root should build cache");
-                if hit_in_branch {
-                    branches_hit.insert(branch_name.to_owned());
-                }
-            }
+                        // build the cache
+                        update_from_root(conn, &target_commit, &repo, root)?;
 
-            // insert new results
-            let commit_results = CommitResults {
-                branches: branches_hit.clone(),
-            };
+                        // query result from cache
+                        let hit_in_branch = cache::query(conn, &target_commit, &str_root)?
+                            .expect("update_from_root should build cache");
+                        if hit_in_branch {
+                            branches_hit.insert(branch_name.to_owned());
+                        }
+                    }
+                    Ok(branches_hit)
+                })
+                .await
+                .map_err(|e| Error::DBInteract(Mutex::new(e)))??
+        };
+
+        let commit_results = CommitResults {
+            branches: branches_hit.clone(),
+        };
+        log::info!(
+            "finished updating for commit {} on {}",
+            target_commit,
+            resources.task.repo
+        );
+
+        // insert and save new results
+        {
+            let mut results = resources.results.write().await;
             results
                 .commits
-                .insert(target_commit.clone(), commit_results.clone());
-            log::info!(
-                "finished updating for commit {} on {}",
-                target_commit,
-                task.repo_name()
-            );
+                .insert(target_commit.to_owned(), commit_results.clone());
+        }
+        resources.save_results().await?;
 
-            // construct final check results
-            let branches_hit_diff = branches_hit
-                .difference(&branches_hit_old)
-                .cloned()
-                .collect();
+        // construct final check results
+        let branches_hit_diff = branches_hit
+            .difference(&branches_hit_old)
+            .cloned()
+            .collect();
 
-            /* phase 2: condition check */
-            let mut removed_by_condition = None;
-            for (identifier, c) in resources.settings.conditions.iter() {
-                if c.condition.meet(&commit_results) && removed_by_condition.is_none() {
-                    removed_by_condition = Some(identifier.clone());
-                }
+        /* phase 2: condition check */
+        let mut removed_by_condition = None;
+        for (identifier, c) in settings.conditions.iter() {
+            if c.condition.meet(&commit_results) && removed_by_condition.is_none() {
+                removed_by_condition = Some(identifier.clone());
             }
-            if removed_by_condition.is_some() {
-                commit_remove_guarded(resources, &target_commit)?;
-            }
+        }
 
-            CommitCheckResult {
-                all: branches_hit,
-                new: branches_hit_diff,
-                removed_by_condition,
-            }
-        };
-        // release the lock and save result
-        task.save_resources()?;
-        Ok(result)
-    })
-    .await?
+        CommitCheckResult {
+            all: branches_hit,
+            new: branches_hit_diff,
+            removed_by_condition,
+        }
+    }; // release the commit lock
+
+    if result.removed_by_condition.is_some() {
+        commit_remove(resources.clone(), target_commit).await?;
+    }
+    Ok(result)
 }
 
 fn branch_name_map_filter(name: &str) -> Option<&str> {
@@ -271,11 +299,11 @@ fn branch_name_map_filter(name: &str) -> Option<&str> {
     Some(captures.get(1).unwrap().as_str())
 }
 
-fn update_from_root(
+fn update_from_root<'r>(
     cache: &Connection,
     target: &str,
-    repo: &Repository,
-    root: Commit,
+    repo: &'r Repository,
+    root: Commit<'r>,
 ) -> Result<(), Error> {
     // phase 1: find commits with out cache
     let todo = {
@@ -387,186 +415,196 @@ fn update_from_root(
 }
 
 pub async fn branch_add(
-    lock: TaskGuard,
+    resources: Arc<Resources>,
     branch: &str,
     settings: BranchSettings,
 ) -> Result<(), Error> {
+    let _guard = resources.branch_lock(branch.to_string()).await;
     {
-        let mut resources = lock.resources.lock().unwrap();
-        if resources.settings.branches.contains_key(branch) {
+        let mut locked = resources.settings.write().await;
+        if locked.branches.contains_key(branch) {
             return Err(Error::BranchExists(branch.to_owned()));
         }
-        resources
-            .settings
-            .branches
-            .insert(branch.to_owned(), settings);
+        locked.branches.insert(branch.to_owned(), settings);
     }
-    lock.save_resources()?;
-    Ok(())
+    resources.save_settings().await
 }
 
-pub async fn branch_remove(lock: TaskGuard, branch: &str) -> Result<(), Error> {
+pub async fn branch_remove(resources: Arc<Resources>, branch: &str) -> Result<(), Error> {
+    let _guard = resources.branch_lock(branch.to_string()).await;
     {
-        let mut resources = lock.resources.lock().unwrap();
-
-        if !resources.settings.branches.contains_key(branch) {
+        let mut locked = resources.settings.write().await;
+        if !locked.branches.contains_key(branch) {
             return Err(Error::UnknownBranch(branch.to_owned()));
         }
-
-        resources.settings.branches.remove(branch);
-        resources.results.branches.remove(branch);
+        locked.branches.remove(branch);
     }
-    lock.save_resources()?;
-    Ok(())
+    resources.save_settings().await?;
+
+    {
+        let mut locked = resources.results.write().await;
+        locked.branches.remove(branch);
+    }
+    resources.save_results().await
 }
 
-pub async fn branch_check(lock: TaskGuard, branch_name: &str) -> Result<BranchCheckResult, Error> {
+pub async fn branch_check(
+    resources: Arc<Resources>,
+    branch_name: &str,
+) -> Result<BranchCheckResult, Error> {
+    let _guard = resources.branch_lock(branch_name.to_string()).await;
     let result = {
-        let mut resources = lock.resources.lock().unwrap();
-        let old_result = match resources.results.branches.remove(branch_name) {
-            Some(r) => r,
-            None => Default::default(),
-        };
-
-        // get the new commit (optional)
-        let remote_branch_name = format!("origin/{branch_name}");
-        let commit = match resources
-            .repo
-            .find_branch(&remote_branch_name, BranchType::Remote)
-        {
-            Ok(branch) => Some(branch.into_reference().peel_to_commit()?.id().to_string()),
-            Err(_error) => {
-                log::warn!(
-                    "branch {} not found in ({}, {})",
-                    branch_name,
-                    lock.chat(),
-                    lock.repo_name()
-                );
-                None
+        let old_result = {
+            let results = resources.results.read().await;
+            match results.branches.get(branch_name) {
+                Some(r) => r.clone(),
+                None => Default::default(),
             }
         };
 
-        resources.results.branches.insert(
-            branch_name.to_owned(),
-            BranchResults {
-                commit: commit.clone(),
-            },
-        );
+        // get the new commit (optional)
+        let commit = {
+            let repo = resources.repo.lock().await;
+            let remote_branch_name = format!("origin/{branch_name}");
+            let c = match repo.find_branch(&remote_branch_name, BranchType::Remote) {
+                Ok(branch) => {
+                    let commit: String = branch.into_reference().peel_to_commit()?.id().to_string();
+                    Some(commit)
+                }
+                Err(_error) => {
+                    log::warn!(
+                        "branch {} not found in ({}, {})",
+                        branch_name,
+                        resources.task.chat,
+                        resources.task.repo,
+                    );
+                    None
+                }
+            };
+            c
+        };
+
+        {
+            let mut results = resources.results.write().await;
+            results.branches.insert(
+                branch_name.to_owned(),
+                BranchResults {
+                    commit: commit.clone(),
+                },
+            );
+        }
+        resources.save_results().await?;
 
         BranchCheckResult {
             old: old_result.commit,
             new: commit,
         }
     };
-    lock.save_resources()?;
     Ok(result)
 }
 
 pub async fn condition_add(
-    lock: TaskGuard,
+    resources: Arc<Resources>,
     identifier: &str,
     settings: ConditionSettings,
 ) -> Result<(), Error> {
     {
-        let mut resources = lock.resources.lock().unwrap();
-        if resources.settings.conditions.contains_key(identifier) {
+        let mut locked = resources.settings.write().await;
+        if locked.conditions.contains_key(identifier) {
             return Err(Error::ConditionExists(identifier.to_owned()));
         }
-        resources
-            .settings
-            .conditions
-            .insert(identifier.to_owned(), settings);
+        locked.conditions.insert(identifier.to_owned(), settings);
     }
-    lock.save_resources()?;
-    Ok(())
+    resources.save_settings().await
 }
 
-pub async fn condition_remove(lock: TaskGuard, identifier: &str) -> Result<(), Error> {
+pub async fn condition_remove(resources: Arc<Resources>, identifier: &str) -> Result<(), Error> {
     {
-        let mut resources = lock.resources.lock().unwrap();
-
-        if !resources.settings.conditions.contains_key(identifier) {
+        let mut locked = resources.settings.write().await;
+        if !locked.conditions.contains_key(identifier) {
             return Err(Error::UnknownCondition(identifier.to_owned()));
         }
-
-        resources.settings.conditions.remove(identifier);
+        locked.conditions.remove(identifier);
     }
-    lock.save_resources()?;
-    Ok(())
+    resources.save_settings().await
 }
 
 pub async fn condition_trigger(
-    lock: TaskGuard,
+    resources: Arc<Resources>,
     identifier: &str,
 ) -> Result<ConditionCheckResult, Error> {
     let mut remove_list = Vec::new();
     {
-        let mut resources = lock.resources.lock().unwrap();
-        let setting = match resources.settings.conditions.get(identifier) {
-            Some(s) => s,
-            None => return Err(Error::UnknownCondition(identifier.to_owned())),
+        let cond = {
+            let settings = resources.settings.read().await;
+            match settings.conditions.get(identifier) {
+                Some(s) => s.condition.clone(),
+                None => return Err(Error::UnknownCondition(identifier.to_owned())),
+            }
         };
-        let cond = &setting.condition;
-        for (commit, result) in resources.results.commits.iter() {
+        let commits = {
+            let results = resources.results.read().await;
+            results.commits.clone()
+        };
+        for (commit, result) in commits.iter() {
             if cond.meet(result) {
                 remove_list.push(commit.clone());
             }
         }
         for r in remove_list.iter() {
-            commit_remove_guarded(&mut resources, r)?;
+            commit_remove(resources.clone(), r).await?;
         }
     }
-    lock.save_resources()?;
     Ok(ConditionCheckResult {
         removed: remove_list,
     })
 }
 
-pub async fn pr_add(lock: TaskGuard, id: u64, settings: PullRequestSettings) -> Result<(), Error> {
+pub async fn pr_add(
+    resources: Arc<Resources>,
+    id: u64,
+    settings: PullRequestSettings,
+) -> Result<(), Error> {
     {
-        let mut resources = lock.resources.lock().unwrap();
-        if resources.settings.pull_requests.contains_key(&id) {
+        let mut locked = resources.settings.write().await;
+        if locked.pull_requests.contains_key(&id) {
             return Err(Error::PullRequestExists(id));
         }
-        resources.settings.pull_requests.insert(id, settings);
+        locked.pull_requests.insert(id, settings);
     }
-    lock.save_resources()?;
-    Ok(())
+    resources.save_settings().await
 }
 
-pub async fn pr_remove(lock: TaskGuard, id: u64) -> Result<(), Error> {
+pub async fn pr_remove(resources: Arc<Resources>, id: u64) -> Result<(), Error> {
     {
-        let mut resources = lock.resources.lock().unwrap();
-
-        if !resources.settings.pull_requests.contains_key(&id) {
+        let mut locked = resources.settings.write().await;
+        if !locked.pull_requests.contains_key(&id) {
             return Err(Error::UnknownPullRequest(id));
         }
-
-        resources.settings.pull_requests.remove(&id);
+        locked.pull_requests.remove(&id);
     }
-    lock.save_resources()?;
-    Ok(())
+    resources.save_settings().await
 }
 
-pub async fn pr_check(lock: TaskGuard, id: u64) -> Result<Option<String>, Error> {
+pub async fn pr_check(resources: Arc<Resources>, id: u64) -> Result<Option<String>, Error> {
     let github_info = {
-        let resources = lock.resources.lock().unwrap();
-        resources
-            .settings
+        let locked = resources.settings.read().await;
+        locked
             .github_info
             .clone()
-            .ok_or(Error::NoGitHubInfo(lock.repo_name().to_string()))?
+            .ok_or(Error::NoGitHubInfo(resources.task.repo.clone()))?
     };
+    log::info!("checking pr {github_info}#{id}");
     if github::is_merged(&github_info, id).await? {
         let settings = {
-            let mut resources = lock.resources.lock().unwrap();
-            resources
-                .settings
+            let mut locked = resources.settings.write().await;
+            locked
                 .pull_requests
                 .remove(&id)
                 .ok_or(Error::UnknownPullRequest(id))?
         };
-        let commit = merged_pr_to_commit(lock, github_info, id, settings).await?;
+        resources.save_settings().await?;
+        let commit = merged_pr_to_commit(resources, github_info, id, settings).await?;
         Ok(Some(commit))
     } else {
         Ok(None)
@@ -574,7 +612,7 @@ pub async fn pr_check(lock: TaskGuard, id: u64) -> Result<Option<String>, Error>
 }
 
 pub async fn merged_pr_to_commit(
-    lock: TaskGuard,
+    resources: Arc<Resources>,
     github_info: GitHubInfo,
     pr_id: u64,
     settings: PullRequestSettings,
@@ -596,7 +634,7 @@ pub async fn merged_pr_to_commit(
         },
     };
 
-    match commit_add(lock, &commit, commit_settings).await {
+    match commit_add(resources, &commit, commit_settings).await {
         Ok(()) | Err(Error::CommitExists(_)) => Ok(commit),
         Err(e) => Err(e),
     }

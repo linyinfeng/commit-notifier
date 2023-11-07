@@ -7,6 +7,7 @@ use crate::error::Error;
 use crate::options;
 use std::fs;
 
+#[derive(Debug, Clone)]
 pub struct Paths {
     pub outer: PathBuf,
     pub lock: PathBuf,
