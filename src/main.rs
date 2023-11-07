@@ -7,6 +7,7 @@ mod options;
 mod repo;
 mod utils;
 
+use std::collections::BTreeSet;
 use std::env;
 use std::fmt;
 use std::str::FromStr;
@@ -73,11 +74,21 @@ async fn answer(bot: Bot, msg: Message, bc: BCommand) -> ResponseResult<()> {
                 command::Notifier::CommitCheck { repo, hash } => {
                     commit_check(bot, msg, repo, hash).await
                 }
+                command::Notifier::CommitSubscribe {
+                    repo,
+                    hash,
+                    unsubscribe,
+                } => commit_subscribe(bot, msg, repo, hash, unsubscribe).await,
                 command::Notifier::PrAdd { repo, pr, comment } => {
                     pr_add(bot, msg, repo, pr, comment).await
                 }
                 command::Notifier::PrRemove { repo, pr } => pr_remove(bot, msg, repo, pr).await,
                 command::Notifier::PrCheck { repo, pr } => pr_check(bot, msg, repo, pr).await,
+                command::Notifier::PrSubscribe {
+                    repo,
+                    pr,
+                    unsubscribe,
+                } => pr_subscribe(bot, msg, repo, pr, unsubscribe).await,
                 command::Notifier::BranchAdd { repo, branch } => {
                     branch_add(bot, msg, repo, branch).await
                 }
@@ -87,6 +98,11 @@ async fn answer(bot: Bot, msg: Message, bc: BCommand) -> ResponseResult<()> {
                 command::Notifier::BranchCheck { repo, branch } => {
                     branch_check(bot, msg, repo, branch).await
                 }
+                command::Notifier::BranchSubscribe {
+                    repo,
+                    branch,
+                    unsubscribe,
+                } => branch_subscribe(bot, msg, repo, branch, unsubscribe).await,
                 command::Notifier::ConditionAdd {
                     repo,
                     identifier,
@@ -116,11 +132,11 @@ async fn answer(bot: Bot, msg: Message, bc: BCommand) -> ResponseResult<()> {
 }
 
 enum CommandError {
-    Normal(error::Error),
+    Normal(Error),
     Teloxide(teloxide::RequestError),
 }
-impl From<error::Error> for CommandError {
-    fn from(e: error::Error) -> Self {
+impl From<Error> for CommandError {
+    fn from(e: Error) -> Self {
         CommandError::Normal(e)
     }
 }
@@ -150,9 +166,11 @@ async fn run() {
         _ = BCommand::repl(bot, answer) => { },
     }
 
+    log::info!("cleaning up resources");
     if let Err(e) = ResourcesMap::clear().await {
         log::error!("failed to clear resources map: {e}");
     }
+    log::info!("exit");
 }
 
 fn octocrab_initialize() {
@@ -380,7 +398,7 @@ async fn list(bot: Bot, msg: Message) -> Result<(), CommandError> {
 async fn repo_add(bot: Bot, msg: Message, name: String, url: String) -> Result<(), CommandError> {
     let chat = msg.chat.id;
     if repo::exists(chat, &name)? {
-        return Err(error::Error::RepoExists(name).into());
+        return Err(Error::RepoExists(name).into());
     }
     reply_to_msg(&bot, &msg, format!("start cloning into '{name}'")).await?;
 
@@ -425,7 +443,7 @@ async fn repo_edit(
         let mut locked = resources.settings.write().await;
         if let Some(r) = branch_regex {
             // ensure regex is valid
-            let _: Regex = Regex::new(&r).map_err(error::Error::from)?;
+            let _: Regex = Regex::new(&r).map_err(Error::from)?;
             locked.branch_regex = r;
         }
         if let Some(info) = github_info {
@@ -449,7 +467,7 @@ async fn repo_edit(
 async fn repo_remove(bot: Bot, msg: Message, name: String) -> Result<(), CommandError> {
     let resources = resources_helper(&msg, &name).await?;
     if !repo::exists(resources.task.chat, &name)? {
-        return Err(error::Error::UnknownRepository(name).into());
+        return Err(Error::UnknownRepository(name).into());
     }
     repo::remove(resources).await?;
     reply_to_msg(&bot, &msg, format!("repository '{name}' removed")).await?;
@@ -510,7 +528,7 @@ async fn commit_check(
         settings
             .commits
             .get(&hash)
-            .ok_or_else(|| error::Error::UnknownCommit(hash.clone()))?
+            .ok_or_else(|| Error::UnknownCommit(hash.clone()))?
             .clone()
     };
     let result = repo::commit_check(resources, &hash).await?;
@@ -519,6 +537,30 @@ async fn commit_check(
         .parse_mode(ParseMode::MarkdownV2)
         .await?;
 
+    Ok(())
+}
+
+async fn commit_subscribe(
+    bot: Bot,
+    msg: Message,
+    repo: String,
+    hash: String,
+    unsubscribe: bool,
+) -> Result<(), CommandError> {
+    let resources = resources_helper(&msg, &repo).await?;
+    let subscriber = subscriber_from_msg(&msg).ok_or(Error::NoSubscriber)?;
+    {
+        let mut settings = resources.settings.write().await;
+        let subscribers = &mut settings
+            .commits
+            .get_mut(&hash)
+            .ok_or_else(|| Error::UnknownCommit(hash.clone()))?
+            .notify
+            .subscribers;
+        modify_subscriber_set(subscribers, subscriber, unsubscribe)?;
+    }
+    resources.save_settings().await?;
+    reply_to_msg(&bot, &msg, "done").await?;
     Ok(())
 }
 
@@ -579,6 +621,30 @@ async fn pr_remove(bot: Bot, msg: Message, repo: String, pr_id: u64) -> Result<(
     Ok(())
 }
 
+async fn pr_subscribe(
+    bot: Bot,
+    msg: Message,
+    repo: String,
+    pr_id: u64,
+    unsubscribe: bool,
+) -> Result<(), CommandError> {
+    let resources = resources_helper(&msg, &repo).await?;
+    let subscriber = subscriber_from_msg(&msg).ok_or(Error::NoSubscriber)?;
+    {
+        let mut settings = resources.settings.write().await;
+        let subscribers = &mut settings
+            .pull_requests
+            .get_mut(&pr_id)
+            .ok_or_else(|| Error::UnknownPullRequest(pr_id))?
+            .notify
+            .subscribers;
+        modify_subscriber_set(subscribers, subscriber, unsubscribe)?;
+    }
+    resources.save_settings().await?;
+    reply_to_msg(&bot, &msg, "done").await?;
+    Ok(())
+}
+
 async fn branch_add(
     bot: Bot,
     msg: Message,
@@ -618,7 +684,7 @@ async fn branch_check(
         settings
             .branches
             .get(&branch)
-            .ok_or_else(|| error::Error::UnknownBranch(branch.clone()))?
+            .ok_or_else(|| Error::UnknownBranch(branch.clone()))?
             .clone()
     };
     let result = repo::branch_check(resources, &branch).await?;
@@ -627,6 +693,30 @@ async fn branch_check(
         .parse_mode(ParseMode::MarkdownV2)
         .await?;
 
+    Ok(())
+}
+
+async fn branch_subscribe(
+    bot: Bot,
+    msg: Message,
+    repo: String,
+    branch: String,
+    unsubscribe: bool,
+) -> Result<(), CommandError> {
+    let resources = resources_helper(&msg, &repo).await?;
+    let subscriber = subscriber_from_msg(&msg).ok_or(Error::NoSubscriber)?;
+    {
+        let mut settings = resources.settings.write().await;
+        let subscribers = &mut settings
+            .branches
+            .get_mut(&branch)
+            .ok_or_else(|| Error::UnknownBranch(branch.clone()))?
+            .notify
+            .subscribers;
+        modify_subscriber_set(subscribers, subscriber, unsubscribe)?;
+    }
+    resources.save_settings().await?;
+    reply_to_msg(&bot, &msg, "done").await?;
     Ok(())
 }
 
@@ -739,15 +829,13 @@ fn branch_check_message(
     let status = if result.old == result.new {
         format!(
             "{}
-\\(not changed\\)
-",
+\\(not changed\\)",
             markdown_optional_commit(result.new.as_deref())
         )
     } else {
         format!(
             "{old} \u{2192}
-{new}
-",
+{new}",
             old = markdown_optional_commit(result.old.as_deref()),
             new = markdown_optional_commit(result.new.as_deref()),
         )
@@ -810,4 +898,23 @@ fn subscriber_from_msg(msg: &Message) -> Option<Subscriber> {
             username: name.to_string(),
         }),
     }
+}
+
+fn modify_subscriber_set(
+    set: &mut BTreeSet<Subscriber>,
+    subscriber: Subscriber,
+    unsubscribe: bool,
+) -> Result<(), Error> {
+    if unsubscribe {
+        if !set.contains(&subscriber) {
+            return Err(Error::NotSubscribed);
+        }
+        set.remove(&subscriber);
+    } else {
+        if set.contains(&subscriber) {
+            return Err(Error::AlreadySubscribed);
+        }
+        set.insert(subscriber);
+    }
+    Ok(())
 }

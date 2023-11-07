@@ -83,6 +83,12 @@ pub enum Error {
     NoGitHubInfo(String),
     #[error("url parse error: '{0}'")]
     UrlParse(#[from] url::ParseError),
+    #[error("can not get subscriber from message")]
+    NoSubscriber,
+    #[error("already subscribed")]
+    AlreadySubscribed,
+    #[error("not subscribed")]
+    NotSubscribed,
 }
 
 impl Error {

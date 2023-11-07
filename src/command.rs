@@ -39,6 +39,13 @@ pub enum Notifier {
     CommitRemove { repo: String, hash: String },
     #[command(about = "fire a commit check immediately")]
     CommitCheck { repo: String, hash: String },
+    #[command(about = "subscribe a commit")]
+    CommitSubscribe {
+        repo: String,
+        hash: String,
+        #[arg(short, long)]
+        unsubscribe: bool,
+    },
     #[command(about = "add a pull request")]
     PrAdd {
         repo: String,
@@ -50,12 +57,26 @@ pub enum Notifier {
     PrRemove { repo: String, pr: u64 },
     #[command(about = "check a pull request")]
     PrCheck { repo: String, pr: u64 },
+    #[command(about = "subscribe a pull request")]
+    PrSubscribe {
+        repo: String,
+        pr: u64,
+        #[arg(short, long)]
+        unsubscribe: bool,
+    },
     #[command(about = "add a branch")]
     BranchAdd { repo: String, branch: String },
     #[command(about = "remove a branch")]
     BranchRemove { repo: String, branch: String },
     #[command(about = "fire a branch check immediately")]
     BranchCheck { repo: String, branch: String },
+    #[command(about = "subscribe a branch")]
+    BranchSubscribe {
+        repo: String,
+        branch: String,
+        #[arg(short, long)]
+        unsubscribe: bool,
+    },
     #[command(about = "add an auto clean condition")]
     ConditionAdd {
         repo: String,
