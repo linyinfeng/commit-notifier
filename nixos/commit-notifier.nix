@@ -16,8 +16,8 @@ in {
     };
     package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.nur.repos.linyinfeng.commit-notifier;
-      defaultText = "pkgs.nur.repos.linyinfeng.commit-notifier";
+      default = pkgs.commit-notifier;
+      defaultText = "pkgs.commit-notifier";
       description = ''
         commit-notifier derivation to use.
       '';
