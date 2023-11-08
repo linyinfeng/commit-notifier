@@ -587,6 +587,7 @@ async fn pr_add(
         },
     };
     repo::pr_add(resources, pr_id, settings).await?;
+    reply_to_msg(&bot, &msg, format!("pr {pr_id} added")).await?;
     pr_check(bot, msg, repo, pr_id).await
 }
 
