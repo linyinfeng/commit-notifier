@@ -1038,9 +1038,9 @@ checksum = "01cda141df6706de531b6c46c3a33ecca755538219bd484262fa09410c13539c"
 
 [[package]]
 name = "lockable"
-version = "0.0.7"
+version = "0.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9f7f8da4d171ac6248e30d3e82b51010f64a9eeae525db47538fd72d4e6f9fe"
+checksum = "66bfb2c9f8bb470750cdf9ecbe667e336b6682eb7ff6ec8fadc7b50d88339eff"
 dependencies = [
  "derive_more",
  "futures",
