@@ -634,8 +634,7 @@ pub async fn merged_pr_to_commit(
         },
     };
 
-    match commit_add(resources, &commit, commit_settings).await {
-        Ok(()) | Err(Error::CommitExists(_)) => Ok(commit),
-        Err(e) => Err(e),
-    }
+    commit_add(resources, &commit, commit_settings)
+        .await
+        .map(|()| commit)
 }
