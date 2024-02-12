@@ -17,12 +17,6 @@ pub struct Paths {
     pub results: PathBuf,
 }
 
-#[derive(Debug)]
-pub struct CheckResult {
-    pub all: BTreeSet<String>,
-    pub new: BTreeSet<String>,
-}
-
 static NAME_RE: once_cell::sync::Lazy<Regex> =
     once_cell::sync::Lazy::new(|| Regex::new("^[a-zA-Z0-9_\\-]*$").unwrap());
 

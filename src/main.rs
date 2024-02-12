@@ -490,13 +490,14 @@ async fn commit_add(
     match repo::commit_add(resources, &hash, settings).await {
         Ok(()) => {
             reply_to_msg(&bot, &msg, format!("commit {hash} added")).await?;
+            commit_check(bot, msg, repo, hash).await?;
         }
         Err(Error::CommitExists(_)) => {
-            // do nothing
+            commit_subscribe(bot.clone(), msg.clone(), repo.clone(), hash.clone(), false).await?;
         }
         Err(e) => return Err(e.into()),
     }
-    commit_check(bot, msg, repo, hash).await
+    Ok(())
 }
 
 async fn commit_remove(
@@ -586,15 +587,23 @@ async fn pr_add(
             subscribers,
         },
     };
-    repo::pr_add(resources, pr_id, settings).await?;
-    reply_to_msg(&bot, &msg, format!("pr {pr_id} added")).await?;
-    pr_check(bot, msg, repo, pr_id).await
+    match repo::pr_add(resources, pr_id, settings).await {
+        Ok(()) => {
+            reply_to_msg(&bot, &msg, format!("pr {pr_id} added")).await?;
+            pr_check(bot, msg, repo, pr_id).await?;
+        }
+        Err(Error::PullRequestExists(_)) => {
+            pr_subscribe(bot.clone(), msg.clone(), repo.clone(), pr_id, false).await?;
+        }
+        Err(e) => return Err(e.into()),
+    };
+    Ok(())
 }
 
 async fn pr_check(bot: Bot, msg: Message, repo: String, pr_id: u64) -> Result<(), CommandError> {
     let resources = resources_helper(&msg, &repo).await?;
-    match repo::pr_check(resources, pr_id).await? {
-        Some(commit) => {
+    match repo::pr_check(resources, pr_id).await {
+        Ok(Some(commit)) => {
             reply_to_msg(
                 &bot,
                 &msg,
@@ -604,9 +613,13 @@ async fn pr_check(bot: Bot, msg: Message, repo: String, pr_id: u64) -> Result<()
             .await?;
             commit_check(bot, msg, repo, commit).await?;
         }
-        None => {
+        Ok(None) => {
             reply_to_msg(&bot, &msg, format!("pr {pr_id} has not been merged yet")).await?;
         }
+        Err(Error::CommitExists(commit)) => {
+            commit_subscribe(bot, msg, repo, commit, false).await?;
+        }
+        Err(e) => return Err(e.into()),
     }
     Ok(())
 }
@@ -652,8 +665,23 @@ async fn branch_add(
     let settings = BranchSettings {
         notify: Default::default(),
     };
-    repo::branch_add(resources, &branch, settings).await?;
-    branch_check(bot, msg, repo, branch).await
+    match repo::branch_add(resources, &branch, settings).await {
+        Ok(()) => {
+            branch_check(bot, msg, repo, branch).await?;
+        }
+        Err(Error::BranchExists(_)) => {
+            branch_subscribe(
+                bot.clone(),
+                msg.clone(),
+                repo.clone(),
+                branch.clone(),
+                false,
+            )
+            .await?;
+        }
+        Err(e) => return Err(e.into()),
+    }
+    Ok(())
 }
 
 async fn branch_remove(
