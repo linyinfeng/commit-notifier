@@ -89,6 +89,18 @@ pub enum Error {
     AlreadySubscribed,
     #[error("not subscribed")]
     NotSubscribed,
+    #[error("subscribe term serialize size exceeded: length = {0}, string = {1}")]
+    SubscribeTermSizeExceeded(usize, String),
+    #[error("can not determine chat id from subscribe callback query")]
+    SubscribeCallbackNoChatId,
+    #[error("can not determine message id from subscribe callback query")]
+    SubscribeCallbackNoMsgId,
+    #[error("can not determine username from subscribe callback query")]
+    SubscribeCallbackNoUsername,
+    #[error("can not get data from subscribe callback query")]
+    SubscribeCallbackNoData,
+    #[error("invalid kind '{0}' in subscribe callback data")]
+    SubscribeCallbackDataInvalidKind(String),
 }
 
 impl Error {
@@ -96,6 +108,18 @@ impl Error {
         log::warn!("report error to chat {}: {:?}", msg.chat.id, self);
         bot.send_message(msg.chat.id, format!("{self}"))
             .reply_to_message_id(msg.id)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn report_to_user(
+        &self,
+        bot: &Bot,
+        chat_id: ChatId,
+        username: &str,
+    ) -> Result<(), teloxide::RequestError> {
+        log::warn!("report error to chat {}: {:?}", chat_id, self);
+        bot.send_message(chat_id, format!("@{username} {self}"))
             .await?;
         Ok(())
     }

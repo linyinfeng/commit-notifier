@@ -27,8 +27,15 @@ use repo::settings::PullRequestSettings;
 use repo::settings::Subscriber;
 use repo::tasks::Task;
 use repo::BranchCheckResult;
+use serde::Deserialize;
+use serde::Serialize;
+use teloxide::dispatching::dialogue::GetChatId;
 use teloxide::prelude::*;
+use teloxide::types::InlineKeyboardButton;
+use teloxide::types::InlineKeyboardButtonKind;
+use teloxide::types::InlineKeyboardMarkup;
 use teloxide::types::ParseMode;
+use teloxide::update_listeners;
 use teloxide::utils::command::BotCommands;
 use teloxide::utils::markdown;
 use tokio::time::sleep;
@@ -131,6 +138,109 @@ async fn answer(bot: Bot, msg: Message, bc: BCommand) -> ResponseResult<()> {
     }
 }
 
+async fn handle_callback_query(bot: Bot, query: CallbackQuery) -> ResponseResult<()> {
+    match handle_callback_query_command_result(&bot, &query).await {
+        Ok(msg) => match get_chat_id_and_username_from_query(&query) {
+            Ok((chat_id, username)) => {
+                bot.send_message(chat_id, format!("@{username} {msg}"))
+                    .await?;
+                Ok(())
+            }
+            Err(e) => {
+                log::error!("callback query error: {e}");
+                Ok(())
+            }
+        },
+        Err(CommandError::Normal(e)) => match get_chat_id_and_username_from_query(&query) {
+            Ok((chat_id, username)) => e.report_to_user(&bot, chat_id, &username).await,
+            Err(_e) => {
+                log::error!("callback query error: {e}");
+                Ok(())
+            }
+        },
+        Err(CommandError::Teloxide(e)) => Err(e),
+    }
+}
+
+async fn handle_callback_query_command_result(
+    _bot: &Bot,
+    query: &CallbackQuery,
+) -> Result<String, CommandError> {
+    log::debug!("query = {query:?}");
+    let (chat_id, username) = get_chat_id_and_username_from_query(query)?;
+    let subscriber = Subscriber::Telegram { username };
+    let _msg = query
+        .message
+        .as_ref()
+        .ok_or(Error::SubscribeCallbackNoMsgId)?;
+    let data = query.data.as_ref().ok_or(Error::SubscribeCallbackNoData)?;
+    let SubscribeTerm(kind, repo, id, subscribe) =
+        serde_json::from_str(data).map_err(Error::Serde)?;
+    let unsubscribe = subscribe == 0;
+    match kind.as_str() {
+        "b" => {
+            let resources = resources_helper_chat(chat_id, &repo).await?;
+            {
+                let mut settings = resources.settings.write().await;
+                let subscribers = &mut settings
+                    .branches
+                    .get_mut(&id)
+                    .ok_or_else(|| Error::UnknownBranch(id.clone()))?
+                    .notify
+                    .subscribers;
+                modify_subscriber_set(subscribers, subscriber, unsubscribe)?;
+            }
+            resources.save_settings().await?;
+        }
+        "c" => {
+            let resources = resources_helper_chat(chat_id, &repo).await?;
+            {
+                let mut settings = resources.settings.write().await;
+                let subscribers = &mut settings
+                    .commits
+                    .get_mut(&id)
+                    .ok_or_else(|| Error::UnknownCommit(id.clone()))?
+                    .notify
+                    .subscribers;
+                modify_subscriber_set(subscribers, subscriber, unsubscribe)?;
+            }
+            resources.save_settings().await?;
+        }
+        "p" => {
+            let pr_id: u64 = id.parse().map_err(Error::ParseInt)?;
+            let resources = resources_helper_chat(chat_id, &repo).await?;
+            {
+                let mut settings = resources.settings.write().await;
+                let subscribers = &mut settings
+                    .pull_requests
+                    .get_mut(&pr_id)
+                    .ok_or_else(|| Error::UnknownPullRequest(pr_id))?
+                    .notify
+                    .subscribers;
+                modify_subscriber_set(subscribers, subscriber, unsubscribe)?;
+            }
+            resources.save_settings().await?;
+        }
+        _ => Err(Error::SubscribeCallbackDataInvalidKind(kind))?,
+    }
+    if unsubscribe {
+        Ok(format!("unsubscribed from {repo}/{id}"))
+    } else {
+        Ok(format!("subscribed to {repo}/{id}"))
+    }
+}
+
+fn get_chat_id_and_username_from_query(query: &CallbackQuery) -> Result<(ChatId, String), Error> {
+    let chat_id = query.chat_id().ok_or(Error::SubscribeCallbackNoChatId)?;
+    let username = query
+        .from
+        .username
+        .as_ref()
+        .ok_or(Error::SubscribeCallbackNoUsername)?
+        .clone();
+    Ok((chat_id, username))
+}
+
 enum CommandError {
     Normal(Error),
     Teloxide(teloxide::RequestError),
@@ -146,6 +256,9 @@ impl From<teloxide::RequestError> for CommandError {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct SubscribeTerm(String, String, String, usize);
+
 #[tokio::main]
 async fn main() {
     run().await;
@@ -160,10 +273,23 @@ async fn run() {
     octocrab_initialize();
 
     let bot = Bot::from_env();
+    let command_handler = teloxide::filter_command::<BCommand, _>().endpoint(answer);
+    let message_handler = Update::filter_message().branch(command_handler);
+    let callback_handler = Update::filter_callback_query().endpoint(handle_callback_query);
+    let handler = dptree::entry()
+        .branch(message_handler)
+        .branch(callback_handler);
+    let mut dispatcher = Dispatcher::builder(bot.clone(), handler)
+        .enable_ctrlc_handler()
+        .build();
 
+    let update_listener = update_listeners::polling_default(bot.clone()).await;
     tokio::select! {
         _ = schedule(bot.clone()) => { },
-        _ = BCommand::repl(bot, answer) => { },
+        _ = dispatcher.dispatch_with_listener(
+            update_listener,
+            LoggingErrorHandler::with_custom_text("An error from the update listener"),
+        ) => { },
     }
 
     log::info!("cleaning up resources");
@@ -286,9 +412,21 @@ async fn update(bot: Bot) -> Result<(), teloxide::RequestError> {
                 log::info!("finished branch check ({chat}, {repo}, {branch})");
                 if result.new != result.old {
                     let message = branch_check_message(&repo, &branch, &settings, &result);
-                    bot.send_message(chat, message)
-                        .parse_mode(ParseMode::MarkdownV2)
-                        .await?;
+                    let markup = subscribe_button_markup("b", &repo, &branch);
+                    let mut send = bot
+                        .send_message(chat, message)
+                        .parse_mode(ParseMode::MarkdownV2);
+                    match markup {
+                        Ok(m) => {
+                            send = send.reply_markup(m);
+                        }
+                        Err(e) => {
+                            log::error!(
+                                "failed to create markup for ({chat}, {repo}, {branch}): {e}"
+                            );
+                        }
+                    }
+                    send.await?;
                 }
             }
 
@@ -308,9 +446,23 @@ async fn update(bot: Bot) -> Result<(), teloxide::RequestError> {
                 log::info!("finished commit check ({chat}, {repo}, {commit})");
                 if !result.new.is_empty() {
                     let message = commit_check_message(&repo, &commit, &settings, &result);
-                    bot.send_message(chat, message)
-                        .parse_mode(ParseMode::MarkdownV2)
-                        .await?;
+                    let mut send = bot
+                        .send_message(chat, message)
+                        .parse_mode(ParseMode::MarkdownV2);
+                    if result.removed_by_condition.is_none() {
+                        let markup = subscribe_button_markup("c", &repo, &commit);
+                        match markup {
+                            Ok(m) => {
+                                send = send.reply_markup(m);
+                            }
+                            Err(e) => {
+                                log::error!(
+                                    "failed to create markup for ({chat}, {repo}, {commit}): {e}"
+                                );
+                            }
+                        }
+                    }
+                    send.await?;
                 }
             }
         }
@@ -530,10 +682,21 @@ async fn commit_check(
     };
     let result = repo::commit_check(resources, &hash).await?;
     let reply = commit_check_message(&repo, &hash, &commit_settings, &result);
-    reply_to_msg(&bot, &msg, reply)
-        .parse_mode(ParseMode::MarkdownV2)
-        .await?;
-
+    let mut send = reply_to_msg(&bot, &msg, reply).parse_mode(ParseMode::MarkdownV2);
+    if result.removed_by_condition.is_none() {
+        match subscribe_button_markup("c", &repo, &hash) {
+            Ok(m) => {
+                send = send.reply_markup(m);
+            }
+            Err(e) => {
+                log::error!(
+                    "failed to create markup for ({chat}, {repo}, {hash}): {e}",
+                    chat = msg.chat.id
+                );
+            }
+        }
+    }
+    send.await?;
     Ok(())
 }
 
@@ -714,9 +877,20 @@ async fn branch_check(
     };
     let result = repo::branch_check(resources, &branch).await?;
     let reply = branch_check_message(&repo, &branch, &branch_settings, &result);
-    reply_to_msg(&bot, &msg, reply)
-        .parse_mode(ParseMode::MarkdownV2)
-        .await?;
+
+    let mut send = reply_to_msg(&bot, &msg, reply).parse_mode(ParseMode::MarkdownV2);
+    match subscribe_button_markup("b", &repo, &branch) {
+        Ok(m) => {
+            send = send.reply_markup(m);
+        }
+        Err(e) => {
+            log::error!(
+                "failed to create markup for ({chat}, {repo}, {branch}): {e}",
+                chat = msg.chat.id
+            );
+        }
+    }
+    send.await?;
 
     Ok(())
 }
@@ -795,6 +969,14 @@ async fn condition_trigger(
 async fn resources_helper(msg: &Message, repo: &str) -> Result<Arc<Resources>, Error> {
     let task = Task {
         chat: msg.chat.id,
+        repo: repo.to_string(),
+    };
+    ResourcesMap::get(&task).await
+}
+
+async fn resources_helper_chat(chat: ChatId, repo: &str) -> Result<Arc<Resources>, Error> {
+    let task = Task {
+        chat,
         repo: repo.to_string(),
     };
     ResourcesMap::get(&task).await
@@ -947,4 +1129,41 @@ fn modify_subscriber_set(
         set.insert(subscriber);
     }
     Ok(())
+}
+
+fn subscribe_button_markup(
+    kind: &str,
+    repo: &str,
+    id: &str,
+) -> Result<InlineKeyboardMarkup, Error> {
+    let mut item = SubscribeTerm(kind.to_owned(), repo.to_owned(), id.to_owned(), 1);
+    let subscribe_data = serde_json::to_string(&item)?;
+    item.3 = 0;
+    let unsubscribe_data = serde_json::to_string(&item)?;
+    let subscribe_len = subscribe_data.as_bytes().len();
+    if subscribe_len > 64 {
+        return Err(Error::SubscribeTermSizeExceeded(
+            subscribe_len,
+            subscribe_data,
+        ));
+    }
+    let unsubscribe_len = unsubscribe_data.as_bytes().len();
+    if unsubscribe_len > 64 {
+        return Err(Error::SubscribeTermSizeExceeded(
+            unsubscribe_len,
+            unsubscribe_data,
+        ));
+    }
+    let subscribe_button = InlineKeyboardButton::new(
+        "Subscribe",
+        InlineKeyboardButtonKind::CallbackData(subscribe_data),
+    );
+    let unsubscribe_button = InlineKeyboardButton::new(
+        "Unsubscribe",
+        InlineKeyboardButtonKind::CallbackData(unsubscribe_data),
+    );
+    Ok(InlineKeyboardMarkup::new([[
+        subscribe_button,
+        unsubscribe_button,
+    ]]))
 }
