@@ -777,7 +777,20 @@ async fn pr_check(bot: Bot, msg: Message, repo: String, pr_id: u64) -> Result<()
             commit_check(bot, msg, repo, commit).await?;
         }
         Ok(None) => {
-            reply_to_msg(&bot, &msg, format!("pr {pr_id} has not been merged yet")).await?;
+            let mut send = reply_to_msg(&bot, &msg, format!("pr {pr_id} has not been merged yet"))
+                .parse_mode(ParseMode::MarkdownV2);
+            match subscribe_button_markup("p", &repo, &pr_id.to_string()) {
+                Ok(m) => {
+                    send = send.reply_markup(m);
+                }
+                Err(e) => {
+                    log::error!(
+                        "failed to create markup for ({chat}, {repo}, {pr_id}): {e}",
+                        chat = msg.chat.id
+                    );
+                }
+            }
+            send.await?;
         }
         Err(Error::CommitExists(commit)) => {
             commit_subscribe(bot, msg, repo, commit, false).await?;
