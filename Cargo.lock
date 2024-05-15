@@ -371,9 +371,9 @@ dependencies = [
 
 [[package]]
 name = "deadpool"
-version = "0.11.2"
+version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff0fc28638c21092aba483136debc6e177fff3dace8c835d715866923b03323e"
+checksum = "6541a3916932fe57768d4be0b1ffb5ec7cbf74ca8c903fdfd5c0fe8aa958f0ed"
 dependencies = [
  "deadpool-runtime",
  "num_cpus",
@@ -391,9 +391,9 @@ dependencies = [
 
 [[package]]
 name = "deadpool-sqlite"
-version = "0.8.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a849c6ac43afc930ff3f49904abb49642ae8be629b42586f0f7733424c766217"
+checksum = "2f9cc6210316f8b7ced394e2a5d2833ce7097fb28afb5881299c61bc18e8e0e9"
 dependencies = [
  "deadpool",
  "deadpool-sync",
