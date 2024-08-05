@@ -75,10 +75,7 @@ impl NotifySettings {
     }
 
     pub fn description_markdown(&self) -> String {
-        markdown::escape(match self.comment.trim().lines().next() {
-            None => "",
-            Some(l) => l,
-        })
+        markdown::escape(self.comment.trim().lines().next().unwrap_or_default())
     }
 }
 

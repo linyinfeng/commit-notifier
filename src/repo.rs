@@ -194,10 +194,10 @@ pub async fn commit_check(
             let r = resources.results.read().await;
             r.clone()
         };
-        let old_commit_results = match old_results.commits.remove(target_commit) {
-            Some(bs) => bs,
-            None => Default::default(), // create default result
-        };
+        let old_commit_results = old_results
+            .commits
+            .remove(target_commit)
+            .unwrap_or_default();
         let branches_hit_old = old_commit_results.branches;
 
         let branches_hit = {

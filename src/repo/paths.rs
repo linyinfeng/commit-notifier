@@ -10,7 +10,6 @@ use std::fs;
 #[derive(Debug, Clone)]
 pub struct Paths {
     pub outer: PathBuf,
-    pub lock: PathBuf,
     pub repo: PathBuf,
     pub cache: PathBuf,
     pub settings: PathBuf,
@@ -33,7 +32,6 @@ pub fn get(chat_id: ChatId, repo: &str) -> Result<Paths, Error> {
     let outer_dir = chat_working_dir.join(repo);
     Ok(Paths {
         outer: outer_dir.clone(),
-        lock: outer_dir.join("lock"),
         repo: outer_dir.join("repo"),
         cache: outer_dir.join("cache.sqlite"),
         settings: outer_dir.join("settings.json"),
