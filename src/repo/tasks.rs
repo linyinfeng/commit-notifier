@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use deadpool_sqlite::Pool;
-use fs4::FileExt;
+use fs4::fs_std::FileExt;
 use git2::Repository;
 use lockable::LockPool;
 use once_cell::sync::Lazy;
