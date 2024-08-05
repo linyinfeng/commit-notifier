@@ -15,7 +15,6 @@
     crane.inputs.nixpkgs.follows = "nixpkgs";
 
     rust-overlay.url = "github:oxalica/rust-overlay";
-    rust-overlay.inputs.flake-utils.follows = "flake-utils";
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
 
     systems.url = "github:nix-systems/default";
