@@ -19,7 +19,6 @@ rusqlite = "*"
 log = "*"
 pretty_env_logger = "*"
 thiserror = "*"
-derive_more = "*"
 clap = { version = "*", features = [ "cargo", "derive" ] }
 regex = "*"
 serde_json = "*"
