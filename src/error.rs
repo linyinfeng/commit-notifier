@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 
 use teloxide::prelude::*;
+use teloxide::types::ReplyParameters;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
@@ -107,7 +108,7 @@ impl Error {
     pub async fn report(&self, bot: &Bot, msg: &Message) -> Result<(), teloxide::RequestError> {
         log::warn!("report error to chat {}: {:?}", msg.chat.id, self);
         bot.send_message(msg.chat.id, format!("{self}"))
-            .reply_to_message_id(msg.id)
+            .reply_parameters(ReplyParameters::new(msg.id))
             .await?;
         Ok(())
     }
