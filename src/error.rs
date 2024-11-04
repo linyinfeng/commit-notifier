@@ -77,7 +77,7 @@ pub enum Error {
     #[error("unknown condition identifier: '{0}'")]
     UnknownCondition(String),
     #[error("github api error: '{0}'")]
-    Octocrab(#[from] octocrab::Error),
+    Octocrab(#[from] Box<octocrab::Error>),
     #[error("no merge commit: '{github_info}#{pr_id}'")]
     NoMergeCommit { github_info: GitHubInfo, pr_id: u64 },
     #[error("no associated github info for repo: '{0}'")]

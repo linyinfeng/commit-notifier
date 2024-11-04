@@ -63,12 +63,14 @@ pub async fn is_merged(info: &GitHubInfo, pr_id: u64) -> Result<bool, Error> {
     Ok(octocrab::instance()
         .pulls(&info.owner, &info.repo)
         .is_merged(pr_id)
-        .await?)
+        .await
+        .map_err(Box::new)?)
 }
 
 pub async fn get_pr(info: &GitHubInfo, pr_id: u64) -> Result<PullRequest, Error> {
     Ok(octocrab::instance()
         .pulls(&info.owner, &info.repo)
         .get(pr_id)
-        .await?)
+        .await
+        .map_err(Box::new)?)
 }
