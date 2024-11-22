@@ -1490,9 +1490,9 @@ dependencies = [
 
 [[package]]
 name = "octocrab"
-version = "0.42.0"
+version = "0.42.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5235d5839910001bef2c3df99a88688c7c781e5b1fd5fe40c5d8fa8bd786ac5a"
+checksum = "7b97f949a7cb04608441c2ddb28e15a377e8b5142c2d1835ad2686d434de8558"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1674,9 +1674,9 @@ dependencies = [
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.91"
+version = "1.0.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "307e3004becf10f5a6e0d59d20f3cd28231b0e0827a96cd3e0ce6d14bc1e4bb3"
+checksum = "37d3544b3f2748c54e147655edb5025752e2303145b5aefb3c3ea2c78b973bb0"
 dependencies = [
  "unicode-ident",
 ]
