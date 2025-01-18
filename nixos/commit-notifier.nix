@@ -69,7 +69,8 @@ in {
       ];
 
       serviceConfig = {
-        DynamicUser = true;
+        User = "commit-notifier";
+        Group = "commit-notifier";
         StateDirectory = "commit-notifier";
         LoadCredential = [
           "telegram-bot:${cfg.tokenFiles.telegramBot}"
@@ -83,5 +84,11 @@ in {
       after = ["network-online.target"];
       requires = ["network-online.target"];
     };
+
+    users.users.commit-notifier = {
+      isSystemUser = true;
+      group = "commit-notifier";
+    };
+    users.groups.commit-notifier = {};
   };
 }
