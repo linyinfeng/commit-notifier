@@ -87,7 +87,7 @@ pub enum Subscriber {
 impl Subscriber {
     fn markdown(&self) -> String {
         match self {
-            Subscriber::Telegram { username } => format!("@{}", username),
+            Subscriber::Telegram { username } => format!("@{}", markdown::escape(username)),
         }
     }
 }
