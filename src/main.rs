@@ -1153,14 +1153,14 @@ fn subscribe_button_markup(
     let subscribe_data = serde_json::to_string(&item)?;
     item.3 = 0;
     let unsubscribe_data = serde_json::to_string(&item)?;
-    let subscribe_len = subscribe_data.as_bytes().len();
+    let subscribe_len = subscribe_data.len();
     if subscribe_len > 64 {
         return Err(Error::SubscribeTermSizeExceeded(
             subscribe_len,
             subscribe_data,
         ));
     }
-    let unsubscribe_len = unsubscribe_data.as_bytes().len();
+    let unsubscribe_len = unsubscribe_data.len();
     if unsubscribe_len > 64 {
         return Err(Error::SubscribeTermSizeExceeded(
             unsubscribe_len,

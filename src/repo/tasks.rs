@@ -186,7 +186,8 @@ where
     }
     log::debug!("read from file: {:?}", path);
     let file = File::open(path)?;
-    file.lock_shared()?; // close of file automatically release the lock
+    // TODO lock_shared maybe added to the std lib in the future
+    FileExt::lock_shared(&file)?; // close of file automatically release the lock
     let reader = BufReader::new(file);
     Ok(serde_json::from_reader(reader)?)
 }
