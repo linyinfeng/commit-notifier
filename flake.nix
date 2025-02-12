@@ -68,14 +68,16 @@
             tag = self.sourceInfo.rev or null;
             copyToRoot = pkgs.buildEnv {
               name = "commit-notifier-env";
-              paths = (with pkgs; [
-                git
-                coreutils # for manual operations
-              ]) ++ (with pkgs.dockerTools; [
-                usrBinEnv
-                binSh
-                caCertificates
-              ]);
+              paths =
+                (with pkgs; [
+                  git
+                  coreutils # for manual operations
+                ])
+                ++ (with pkgs.dockerTools; [
+                  usrBinEnv
+                  binSh
+                  caCertificates
+                ]);
             };
             config = {
               Entrypoint = ["${pkgs.tini}/bin/tini" "--"];
@@ -86,7 +88,7 @@
                     --cron "$COMMIT_NOTIFIER_CRON" \
                     $EXTRA_ARGS "$@"
                 '';
-              in [ "${start}" ];
+              in ["${start}"];
               Env = [
                 "TELOXIDE_TOKEN="
                 "GITHUB_TOKEN="
@@ -95,16 +97,18 @@
                 "EXTRA_ARGS="
               ];
               WorkingDirectory = "/data";
-              Volumes = { "/data" = { }; };
-              Labels = {
-                "org.opencontainers.image.title" = "commit-notifier";
-                "org.opencontainers.image.description" = "A simple telegram bot monitoring commit status";
-                "org.opencontainers.image.url" = "https://github.com/linyinfeng/commit-notifier";
-                "org.opencontainers.image.source" = "https://github.com/linyinfeng/commit-notifier";
-                "org.opencontainers.image.licenses" = "MIT";
-              } // lib.optionalAttrs (self.sourceInfo ? rev) {
-                "org.opencontainers.image.revision" = self.sourceInfo.rev;
-              };
+              Volumes = {"/data" = {};};
+              Labels =
+                {
+                  "org.opencontainers.image.title" = "commit-notifier";
+                  "org.opencontainers.image.description" = "A simple telegram bot monitoring commit status";
+                  "org.opencontainers.image.url" = "https://github.com/linyinfeng/commit-notifier";
+                  "org.opencontainers.image.source" = "https://github.com/linyinfeng/commit-notifier";
+                  "org.opencontainers.image.licenses" = "MIT";
+                }
+                // lib.optionalAttrs (self.sourceInfo ? rev) {
+                  "org.opencontainers.image.revision" = self.sourceInfo.rev;
+                };
             };
           };
         };
