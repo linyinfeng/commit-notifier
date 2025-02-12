@@ -112,7 +112,7 @@
           inherit (config.packages) commit-notifier;
         };
         checks = {
-          inherit (self'.packages) commit-notifier;
+          inherit (self'.packages) commit-notifier dockerImage;
           doc = craneLib.cargoDoc commonArgs;
           fmt = craneLib.cargoFmt {inherit src;};
           nextest = craneLib.cargoNextest commonArgs;
