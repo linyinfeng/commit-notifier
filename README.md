@@ -52,6 +52,19 @@ My instance: <https://github.com/linyinfeng/dotfiles/blob/main/nixos/profiles/se
 }
 ```
 
+## Self-hosting (docker)
+
+Docker images are published on GitHub package registry (<https://github.com/linyinfeng/commit-notifier/pkgs/container/commit-notifier>).
+
+```console
+$ docker run \
+  --env "TELOXIDE_TOKEN={YOUR_TELEGRAM_BOT_TOKEN}" \
+  --env "GITHUB_TOKEN={YOUR_GITHUB_TOKEN}" \
+  --env "COMMIT_NOTIFIER_CRON=0 */5 * * * *" \
+  --volume commit-notifier-data:/data \
+  ghcr.io/linyinfeng/commit-notifier:latest
+```
+
 ## Usage
 
 The telegram bot has only one command `/notifier`. But this command provides a full CLI interface. Simply send `/notifier` to the bot without any arguments, the bot will send back the help information.
