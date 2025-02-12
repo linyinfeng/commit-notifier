@@ -61,8 +61,52 @@
         commonArgs = bareCommonArgs // {inherit cargoArtifacts;};
       in {
         packages = {
-          commit-notifier = craneLib.buildPackage commonArgs;
           default = config.packages.commit-notifier;
+          commit-notifier = craneLib.buildPackage commonArgs;
+          dockerImage = pkgs.dockerTools.buildImage {
+            name = "commit-notifier";
+            tag = self.sourceInfo.rev or null;
+            copyToRoot = pkgs.buildEnv {
+              name = "commit-notifier-env";
+              paths = (with pkgs; [
+                git
+                coreutils # for manual operations
+              ]) ++ (with pkgs.dockerTools; [
+                usrBinEnv
+                binSh
+                caCertificates
+              ]);
+            };
+            config = {
+              Entrypoint = ["${pkgs.tini}/bin/tini" "--"];
+              Cmd = let
+                start = pkgs.writeShellScript "start-commit-notifier" ''
+                  exec ${config.packages.commit-notifier}/bin/commit-notifier \
+                    --working-dir "/data" \
+                    --cron "$COMMIT_NOTIFIER_CRON" \
+                    $EXTRA_ARGS "$@"
+                '';
+              in [ "${start}" ];
+              Env = [
+                "TELOXIDE_TOKEN="
+                "GITHUB_TOKEN="
+                "RUST_LOG=commit_notifier=info"
+                "COMMIT_NOTIFIER_CRON=0 */5 * * * *"
+                "EXTRA_ARGS="
+              ];
+              WorkingDirectory = "/data";
+              Volumes = { "/data" = { }; };
+              Labels = {
+                "org.opencontainers.image.title" = "commit-notifier";
+                "org.opencontainers.image.description" = "A simple telegram bot monitoring commit status";
+                "org.opencontainers.image.url" = "https://github.com/linyinfeng/commit-notifier";
+                "org.opencontainers.image.source" = "https://github.com/linyinfeng/commit-notifier";
+                "org.opencontainers.image.licenses" = "MIT";
+              } // lib.optionalAttrs (self.sourceInfo ? rev) {
+                "org.opencontainers.image.revision" = self.sourceInfo.rev;
+              };
+            };
+          };
         };
         overlayAttrs = {
           inherit (config.packages) commit-notifier;
