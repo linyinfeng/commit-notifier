@@ -92,14 +92,14 @@ Currently, the bot does not have an admin interface in telegram. So adding chats
 * For direct chat:
 
   ```console
-  $ cd /var/lib/commit-notifier
+  $ cd {WORKING_DIR}
   $ mkdir 888888888 # chat id
   ```
 
 * For group chat
 
   ```console
-  $ cd /var/lib/commit-notifier
+  $ cd {WORKING_DIR}
   $ mkdir _1008888888888 # chat id (replace "-" with "_")
   ```
 
