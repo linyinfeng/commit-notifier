@@ -30,6 +30,7 @@ use repo::tasks::Task;
 use serde::Deserialize;
 use serde::Serialize;
 use teloxide::dispatching::dialogue::GetChatId;
+use teloxide::payloads;
 use teloxide::prelude::*;
 use teloxide::types::InlineKeyboardButton;
 use teloxide::types::InlineKeyboardButtonKind;
@@ -139,27 +140,17 @@ async fn answer(bot: Bot, msg: Message, bc: BCommand) -> ResponseResult<()> {
 }
 
 async fn handle_callback_query(bot: Bot, query: CallbackQuery) -> ResponseResult<()> {
-    match handle_callback_query_command_result(&bot, &query).await {
-        Ok(msg) => match get_chat_id_and_username_from_query(&query) {
-            Ok((chat_id, username)) => {
-                bot.send_message(chat_id, format!("@{username} {msg}"))
-                    .await?;
-                Ok(())
-            }
-            Err(e) => {
-                log::error!("callback query error: {e}");
-                Ok(())
-            }
-        },
-        Err(CommandError::Normal(e)) => match get_chat_id_and_username_from_query(&query) {
-            Ok((chat_id, username)) => e.report_to_user(&bot, chat_id, &username).await,
-            Err(_e) => {
-                log::error!("callback query error: {e}");
-                Ok(())
-            }
-        },
-        Err(CommandError::Teloxide(e)) => Err(e),
-    }
+    let result = handle_callback_query_command_result(&bot, &query).await;
+    let (message, alert) = match result {
+        Ok(msg) => (msg, false),
+        Err(CommandError::Normal(e)) => (format!("{e}"), true),
+        Err(CommandError::Teloxide(e)) => return Err(e),
+    };
+    let answer = payloads::AnswerCallbackQuery::new(query.id)
+        .text(message)
+        .show_alert(alert);
+    <Bot as Requester>::AnswerCallbackQuery::new(bot, answer).await?;
+    Ok(())
 }
 
 async fn handle_callback_query_command_result(
