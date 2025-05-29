@@ -112,16 +112,4 @@ impl Error {
             .await?;
         Ok(())
     }
-
-    pub async fn report_to_user(
-        &self,
-        bot: &Bot,
-        chat_id: ChatId,
-        username: &str,
-    ) -> Result<(), teloxide::RequestError> {
-        log::warn!("report error to chat {}: {:?}", chat_id, self);
-        bot.send_message(chat_id, format!("@{username} {self}"))
-            .await?;
-        Ok(())
-    }
 }
