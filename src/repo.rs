@@ -466,7 +466,8 @@ pub async fn branch_check(
         let commit = {
             let repo = resources.repo.lock().await;
             let remote_branch_name = format!("origin/{branch_name}");
-            let c = match repo.find_branch(&remote_branch_name, BranchType::Remote) {
+
+            match repo.find_branch(&remote_branch_name, BranchType::Remote) {
                 Ok(branch) => {
                     let commit: String = branch.into_reference().peel_to_commit()?.id().to_string();
                     Some(commit)
@@ -480,8 +481,7 @@ pub async fn branch_check(
                     );
                     None
                 }
-            };
-            c
+            }
         };
 
         {
