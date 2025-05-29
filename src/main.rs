@@ -139,6 +139,8 @@ async fn answer(bot: Bot, msg: Message, bc: BCommand) -> ResponseResult<()> {
 }
 
 async fn handle_callback_query(bot: Bot, query: CallbackQuery) -> ResponseResult<()> {
+    bot.answer_callback_query(query.id.clone()).await?;
+
     match handle_callback_query_command_result(&bot, &query).await {
         Ok(msg) => match get_chat_id_and_username_from_query(&query) {
             Ok((chat_id, username)) => {
