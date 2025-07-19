@@ -51,7 +51,7 @@ pub struct ConditionCheckResult {
 }
 
 pub async fn create(name: &str, path: PathBuf, url: &str) -> Result<Output, Error> {
-    log::info!("try clone '{}' into {:?}", url, path);
+    log::info!("try clone '{url}' into {path:?}");
 
     let output = {
         let url = url.to_owned();
@@ -76,7 +76,7 @@ pub async fn create(name: &str, path: PathBuf, url: &str) -> Result<Output, Erro
     }
 
     let _repo = Repository::open(&path)?;
-    log::info!("cloned git repository {:?}", path);
+    log::info!("cloned git repository {path:?}");
 
     Ok(output)
 }
@@ -84,7 +84,7 @@ pub async fn create(name: &str, path: PathBuf, url: &str) -> Result<Output, Erro
 pub async fn fetch(resources: Arc<Resources>) -> Result<Output, Error> {
     let paths = &resources.paths;
     let repo_path = &paths.repo;
-    log::info!("fetch {:?}", repo_path);
+    log::info!("fetch {repo_path:?}");
 
     let output = {
         let path = repo_path.clone();

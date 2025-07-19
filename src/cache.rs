@@ -24,7 +24,7 @@ pub fn query(cache: &Connection, target: &str, commit: &str) -> Result<Option<bo
     let mut stmt = cache.prepare_cached(
         "SELECT is_parent FROM commits_cache WHERE target_commit = ?1 AND this_commit = ?2",
     )?;
-    log::trace!("query cache: ({}, {})", target, commit);
+    log::trace!("query cache: ({target}, {commit})");
     let query_result: Vec<bool> = stmt
         .query_map(params!(target, commit), |row| row.get(0))?
         .collect::<Result<_, _>>()?;
@@ -39,7 +39,7 @@ pub fn store(cache: &Connection, target: &str, commit: &str, hit: bool) -> Resul
     let mut stmt = cache.prepare_cached(
         "INSERT INTO commits_cache (target_commit, this_commit, is_parent) VALUES (?1, ?2, ?3)",
     )?;
-    log::trace!("insert new cache: ({}, {}, {})", target, commit, hit);
+    log::trace!("insert new cache: ({target}, {commit}, {hit})");
     let inserted = stmt.execute(params!(target, commit, hit))?;
     assert_eq!(inserted, 1);
     Ok(())
@@ -47,7 +47,7 @@ pub fn store(cache: &Connection, target: &str, commit: &str, hit: bool) -> Resul
 
 pub fn remove(cache: &Connection, target: &str) -> Result<(), Error> {
     let mut stmt = cache.prepare_cached("DELETE FROM commits_cache WHERE target_commit = ?1")?;
-    log::trace!("delete cache for target commit: {}", target);
+    log::trace!("delete cache for target commit: {target}");
     stmt.execute(params!(target))?;
     Ok(())
 }

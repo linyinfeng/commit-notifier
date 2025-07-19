@@ -55,12 +55,12 @@ enum BCommand {
 }
 
 async fn answer(bot: Bot, msg: Message, bc: BCommand) -> ResponseResult<()> {
-    log::debug!("message: {:?}", msg);
-    log::trace!("bot command: {:?}", bc);
+    log::debug!("message: {msg:?}");
+    log::trace!("bot command: {bc:?}");
     let BCommand::Notifier(input) = bc;
     let result = match command::parse(input) {
         Ok(command) => {
-            log::debug!("command: {:?}", command);
+            log::debug!("command: {command:?}");
             let (bot, msg) = (bot.clone(), msg.clone());
             match command {
                 command::Notifier::RepoAdd { name, url } => repo_add(bot, msg, name, url).await,

@@ -181,10 +181,10 @@ where
     T: Serialize + DeserializeOwned + Default,
 {
     if !path.as_ref().is_file() {
-        log::info!("auto create file: {:?}", path);
+        log::info!("auto create file: {path:?}");
         write_json::<_, T>(&path, &Default::default())?;
     }
-    log::debug!("read from file: {:?}", path);
+    log::debug!("read from file: {path:?}");
     let file = File::open(path)?;
     // TODO lock_shared maybe added to the std lib in the future
     FileExt::lock_shared(&file)?; // close of file automatically release the lock
@@ -197,7 +197,7 @@ where
     P: AsRef<Path> + fmt::Debug,
     T: Serialize,
 {
-    log::debug!("write to file: {:?}", path);
+    log::debug!("write to file: {path:?}");
     let file = OpenOptions::new()
         .write(true)
         .create(true)
