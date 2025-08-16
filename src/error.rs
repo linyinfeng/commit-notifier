@@ -102,6 +102,12 @@ pub enum Error {
     SubscribeCallbackNoData,
     #[error("invalid kind '{0}' in subscribe callback data")]
     SubscribeCallbackDataInvalidKind(String),
+    #[error("ambiguous, multiple repos have same github info: {0:?}")]
+    MultipleReposHaveSameGitHubInfo(Vec<String>),
+    #[error("no repository is associated with the github info: {0:?}")]
+    NoRepoHaveGitHubInfo(GitHubInfo),
+    #[error("unsupported pr url: {0}")]
+    UnsupportedPrUrl(String),
 }
 
 impl Error {

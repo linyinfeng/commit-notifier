@@ -12,6 +12,7 @@ use std::env;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::LazyLock;
 
 use chrono::Utc;
 use condition::GeneralCondition;
@@ -87,9 +88,11 @@ async fn answer(bot: Bot, msg: Message, bc: BCommand) -> ResponseResult<()> {
                     hash,
                     unsubscribe,
                 } => commit_subscribe(bot, msg, repo, hash, unsubscribe).await,
-                command::Notifier::PrAdd { repo, pr, comment } => {
-                    pr_add(bot, msg, repo, pr, comment).await
-                }
+                command::Notifier::PrAdd {
+                    repo_or_url,
+                    pr,
+                    comment,
+                } => pr_add(bot, msg, repo_or_url, pr, comment).await,
                 command::Notifier::PrRemove { repo, pr } => pr_remove(bot, msg, repo, pr).await,
                 command::Notifier::PrCheck { repo, pr } => pr_check(bot, msg, repo, pr).await,
                 command::Notifier::PrSubscribe {
@@ -718,10 +721,12 @@ async fn commit_subscribe(
 async fn pr_add(
     bot: Bot,
     msg: Message,
-    repo: String,
-    pr_id: u64,
+    repo_or_url: String,
+    pr_id: Option<u64>,
     optional_comment: Option<String>,
 ) -> Result<(), CommandError> {
+    let chat = msg.chat.id;
+    let (repo, pr_id) = resolve_pr_repo_or_url(chat, repo_or_url, pr_id).await?;
     let resources = resources_helper(&msg, &repo).await?;
     let github_info = {
         let settings = resources.settings.read().await;
@@ -752,6 +757,48 @@ async fn pr_add(
         Err(e) => return Err(e.into()),
     };
     Ok(())
+}
+
+async fn resolve_pr_repo_or_url(
+    chat: ChatId,
+    repo_or_url: String,
+    pr_id: Option<u64>,
+) -> Result<(String, u64), Error> {
+    static GITHUB_URL_REGEX: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"https://github\.com/([^/]+)/([^/]+)/pull/(\d+)"#).unwrap());
+    match pr_id {
+        Some(id) => Ok((repo_or_url, id)),
+        None => {
+            if let Some(captures) = GITHUB_URL_REGEX.captures(&repo_or_url) {
+                let owner = &captures[1];
+                let repo = &captures[2];
+                let github_info = GitHubInfo::new(owner.to_string(), repo.to_string());
+                let pr: u64 = captures[3].parse().map_err(Error::ParseInt)?;
+                let repos = repo::paths::repos(chat)?;
+                let mut repos_found = Vec::new();
+                for repo in repos {
+                    let task = repo::tasks::Task {
+                        chat,
+                        repo: repo.to_owned(),
+                    };
+                    let resources = ResourcesMap::get(&task).await?;
+                    let repo_github_info = &resources.settings.read().await.github_info;
+                    if repo_github_info.as_ref() == Some(&github_info) {
+                        repos_found.push(repo);
+                    }
+                }
+                if repos_found.is_empty() {
+                    return Err(Error::NoRepoHaveGitHubInfo(github_info));
+                } else if repos_found.len() != 1 {
+                    return Err(Error::MultipleReposHaveSameGitHubInfo(repos_found));
+                } else {
+                    let repo = repos_found.pop().unwrap();
+                    return Ok((repo, pr));
+                }
+            }
+            Err(Error::UnsupportedPrUrl(repo_or_url))
+        }
+    }
 }
 
 async fn pr_check(bot: Bot, msg: Message, repo: String, pr_id: u64) -> Result<(), CommandError> {

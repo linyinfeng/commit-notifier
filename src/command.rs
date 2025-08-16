@@ -48,8 +48,8 @@ pub enum Notifier {
     },
     #[command(about = "add a pull request")]
     PrAdd {
-        repo: String,
-        pr: u64,
+        repo_or_url: String,
+        pr: Option<u64>,
         #[arg(long, short)]
         comment: Option<String>,
     },

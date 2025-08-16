@@ -8,7 +8,7 @@ use url::Url;
 
 use crate::error::Error;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct GitHubInfo {
     owner: String,
     repo: String,
@@ -24,6 +24,10 @@ pub static GITHUB_PATH_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new("^/([a-zA-Z0-9_.-]+)/([a-zA-Z0-9_.-]+?)(\\.git)?$").unwrap());
 
 impl GitHubInfo {
+    pub fn new(owner: String, repo: String) -> Self {
+        Self { owner, repo }
+    }
+
     pub fn parse(s: &str) -> Result<Self, String> {
         let v: Vec<_> = s.split('/').collect();
         if v.len() != 2 {
