@@ -137,7 +137,6 @@
           inputsFrom = lib.attrValues self'.checks;
           packages = with pkgs; [
             rustup
-            rust-analyzer
             nil
           ];
         };
