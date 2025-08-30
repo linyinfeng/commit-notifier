@@ -8,7 +8,7 @@ use url::Url;
 
 use crate::error::Error;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GitHubInfo {
     owner: String,
     repo: String,
@@ -19,6 +19,15 @@ impl Display for GitHubInfo {
         write!(f, "{}/{}", self.owner, self.repo)
     }
 }
+
+impl PartialEq for GitHubInfo {
+    fn eq(&self, other: &Self) -> bool {
+        // for backward compatibility
+        self.owner.eq_ignore_ascii_case(&other.owner) && self.repo.eq_ignore_ascii_case(&other.repo)
+    }
+}
+
+impl Eq for GitHubInfo {}
 
 pub static GITHUB_PATH_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new("^/([a-zA-Z0-9_.-]+)/([a-zA-Z0-9_.-]+?)(\\.git)?$").unwrap());
@@ -33,10 +42,7 @@ impl GitHubInfo {
         if v.len() != 2 {
             Err("invalid github info format, 'owner/repo' required".to_string())
         } else {
-            Ok(GitHubInfo {
-                owner: v[0].to_string(),
-                repo: v[1].to_string(),
-            })
+            Ok(Self::new(v[0].to_string(), v[1].to_string()))
         }
     }
 
@@ -59,7 +65,7 @@ impl GitHubInfo {
             .ok_or_else(|| url.clone())?
             .as_str()
             .to_string();
-        Ok(Self { owner, repo })
+        Ok(Self::new(owner, repo))
     }
 }
 
