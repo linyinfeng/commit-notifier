@@ -65,12 +65,19 @@ pub fn chats() -> Result<BTreeSet<ChatId>, Error> {
         }
 
         let name_vec: Vec<_> = name.chars().collect();
-        if name_vec[0] == '_' {
-            let n: i64 = name_vec[1..].iter().collect::<String>().parse()?;
-            chats.insert(ChatId(-n));
+        let (sign, num_str) = if name_vec[0] == '_' {
+            (-1, &name_vec[1..])
         } else {
-            chats.insert(ChatId(name.parse()?));
-        }
+            (1, &name_vec[..])
+        };
+        let n: i64 = match num_str.iter().collect::<String>().parse() {
+            Ok(n) => n,
+            Err(e) => {
+                log::warn!("invalid chat directory '{name}': {e}, ignoring");
+                continue;
+            }
+        };
+        chats.insert(ChatId(sign * n));
     }
     Ok(chats)
 }
