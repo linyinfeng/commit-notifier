@@ -443,7 +443,8 @@ async fn update(bot: Bot) -> Result<(), teloxide::RequestError> {
                     let message = commit_check_message(&repo, &commit, &settings, &result);
                     let mut send = bot
                         .send_message(chat, message)
-                        .parse_mode(ParseMode::MarkdownV2);
+                        .parse_mode(ParseMode::MarkdownV2)
+                        .disable_link_preview(true);
                     if result.removed_by_condition.is_none() {
                         let markup = subscribe_button_markup("c", &repo, &commit);
                         match markup {
