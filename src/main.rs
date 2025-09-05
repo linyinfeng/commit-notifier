@@ -1059,7 +1059,7 @@ fn commit_check_message_summary(
     format!(
         "\\[{repo}\\] {comment} \\+{new}",
         repo = markdown::escape(repo),
-        comment = markdown::underline(&markdown::escape(&settings.notify.comment)),
+        comment = markdown::escape(&settings.notify.comment),
         new = markdown_list_compat(result.new.iter()),
     )
 }
