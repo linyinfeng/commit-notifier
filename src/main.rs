@@ -33,6 +33,7 @@ use serde::Serialize;
 use teloxide::dispatching::dialogue::GetChatId;
 use teloxide::payloads;
 use teloxide::prelude::*;
+use teloxide::sugar::request::RequestLinkPreviewExt;
 use teloxide::types::InlineKeyboardButton;
 use teloxide::types::InlineKeyboardButtonKind;
 use teloxide::types::InlineKeyboardMarkup;
@@ -635,7 +636,6 @@ async fn commit_add(
     };
     match repo::commit_add(resources, &hash, settings).await {
         Ok(()) => {
-            reply_to_msg(&bot, &msg, format!("commit {hash} added")).await?;
             commit_check(bot, msg, repo, hash).await?;
         }
         Err(Error::CommitExists(_)) => {
@@ -676,7 +676,9 @@ async fn commit_check(
     };
     let result = repo::commit_check(resources, &hash).await?;
     let reply = commit_check_message(&repo, &hash, &commit_settings, &result);
-    let mut send = reply_to_msg(&bot, &msg, reply).parse_mode(ParseMode::MarkdownV2);
+    let mut send = reply_to_msg(&bot, &msg, reply)
+        .parse_mode(ParseMode::MarkdownV2)
+        .disable_link_preview(true);
     if result.removed_by_condition.is_none() {
         match subscribe_button_markup("c", &repo, &hash) {
             Ok(m) => {
@@ -748,7 +750,6 @@ async fn pr_add(
     };
     match repo::pr_add(resources, pr_id, settings).await {
         Ok(()) => {
-            reply_to_msg(&bot, &msg, format!("pr {pr_id} added")).await?;
             pr_check(bot, msg, repo, pr_id).await?;
         }
         Err(Error::PullRequestExists(_)) => {
@@ -1039,6 +1040,35 @@ fn commit_check_message(
     settings: &CommitSettings,
     result: &repo::CommitCheckResult,
 ) -> String {
+    format!(
+        "{summary}
+{details}",
+        summary = commit_check_message_summary(repo, settings, result),
+        details = markdown::expandable_blockquote(&commit_check_message_detail(
+            repo, commit, settings, result
+        )),
+    )
+}
+
+fn commit_check_message_summary(
+    repo: &str,
+    settings: &CommitSettings,
+    result: &repo::CommitCheckResult,
+) -> String {
+    format!(
+        "\\[{repo}\\] {comment} \\+{new}",
+        repo = markdown::escape(repo),
+        comment = markdown::underline(&markdown::escape(&settings.notify.comment)),
+        new = markdown_list_compat(result.new.iter()),
+    )
+}
+
+fn commit_check_message_detail(
+    repo: &str,
+    commit: &str,
+    settings: &CommitSettings,
+    result: &repo::CommitCheckResult,
+) -> String {
     let auto_remove_msg = match &result.removed_by_condition {
         None => String::new(),
         Some(condition) => format!(
@@ -1150,6 +1180,23 @@ where
         "\u{2205}".to_owned() // the empty set symbol
     } else {
         assert_eq!(result.pop(), Some('\n'));
+        result
+    }
+}
+
+fn markdown_list_compat<Iter, T>(items: Iter) -> String
+where
+    Iter: Iterator<Item = T>,
+    T: fmt::Display,
+{
+    let mut result = String::new();
+    for item in items {
+        result.push_str(&format!("`{}` ", markdown::escape(&item.to_string())));
+    }
+    if result.is_empty() {
+        "\u{2205}".to_owned() // the empty set symbol
+    } else {
+        assert_eq!(result.pop(), Some(' '));
         result
     }
 }
