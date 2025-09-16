@@ -323,147 +323,148 @@ async fn schedule(bot: Bot) {
         log::info!("update is going to be triggered at '{datetime}', sleep '{dur:?}'");
         sleep(dur).await;
         log::info!("perform update '{datetime}'");
-        if let Err(e) = update(bot.clone()).await {
-            log::error!("teloxide error in update: {e}");
-        }
+        update(bot.clone()).await;
         log::info!("finished update '{datetime}'");
     }
 }
 
-async fn update(bot: Bot) -> Result<(), teloxide::RequestError> {
+async fn update(bot: Bot) {
     let chats = match repo::paths::chats() {
+        Ok(cs) => cs,
         Err(e) => {
             log::error!("failed to get chats: {e}");
-            return Ok(());
+            return;
         }
-        Ok(cs) => cs,
     };
 
     for chat in chats {
-        let repos = match repo::paths::repos(chat) {
+        if let Err(e) = update_chat(bot.clone(), chat).await {
+            log::error!("teloxide error in update for chat {chat}: {e}");
+        }
+    }
+}
+
+async fn update_chat(bot: Bot, chat: ChatId) -> Result<(), teloxide::RequestError> {
+    let repos = match repo::paths::repos(chat) {
+        Err(e) => {
+            log::error!("failed to get repos for chat {chat}: {e}");
+            return Ok(());
+        }
+        Ok(rs) => rs,
+    };
+    for repo in repos {
+        log::info!("update ({chat}, {repo})");
+
+        let task = repo::tasks::Task {
+            chat,
+            repo: repo.to_owned(),
+        };
+
+        let resources = match ResourcesMap::get(&task).await {
+            Ok(r) => r,
             Err(e) => {
-                log::error!("failed to get repos for chat {chat}: {e}");
+                log::warn!("failed to open resources of ({chat}, {repo}), skip: {e}");
                 continue;
             }
-            Ok(rs) => rs,
         };
-        for repo in repos {
-            log::info!("update ({chat}, {repo})");
 
-            let task = repo::tasks::Task {
-                chat,
-                repo: repo.to_owned(),
-            };
+        if let Err(e) = repo::fetch(resources.clone()).await {
+            log::warn!("failed to fetch ({chat}, {repo}), skip: {e}");
+            continue;
+        }
 
-            let resources = match ResourcesMap::get(&task).await {
-                Ok(r) => r,
+        // check pull requests of the repo
+        // check before commit
+        let pull_requests = {
+            let settings = resources.settings.read().await;
+            settings.pull_requests.clone()
+        };
+        for (pr, settings) in pull_requests {
+            let result = match repo::pr_check(resources.clone(), pr).await {
                 Err(e) => {
-                    log::warn!("failed to open resources of ({chat}, {repo}), skip: {e}");
+                    log::warn!("failed to check pr ({chat}, {repo}, {pr}): {e}");
                     continue;
                 }
+                Ok(r) => r,
             };
-
-            if let Err(e) = repo::fetch(resources.clone()).await {
-                log::warn!("failed to fetch ({chat}, {repo}), skip: {e}");
-                continue;
+            log::info!("finished pr check ({chat}, {repo}, {pr})");
+            if let Some(commit) = result {
+                let message = pr_merged_message(&repo, pr, &settings, &commit);
+                bot.send_message(chat, message)
+                    .parse_mode(ParseMode::MarkdownV2)
+                    .await?;
             }
+        }
 
-            // check pull requests of the repo
-            // check before commit
-            let pull_requests = {
-                let settings = resources.settings.read().await;
-                settings.pull_requests.clone()
-            };
-            for (pr, settings) in pull_requests {
-                let result = match repo::pr_check(resources.clone(), pr).await {
-                    Err(e) => {
-                        log::warn!("failed to check pr ({chat}, {repo}, {pr}): {e}");
-                        continue;
-                    }
-                    Ok(r) => r,
-                };
-                log::info!("finished pr check ({chat}, {repo}, {pr})");
-                if let Some(commit) = result {
-                    let message = pr_merged_message(&repo, pr, &settings, &commit);
-                    bot.send_message(chat, message)
-                        .parse_mode(ParseMode::MarkdownV2)
-                        .await?;
+        // check branches of the repo
+        let branches = {
+            let settings = resources.settings.read().await;
+            settings.branches.clone()
+        };
+        for (branch, settings) in branches {
+            let result = match repo::branch_check(resources.clone(), &branch).await {
+                Err(e) => {
+                    log::warn!("failed to check branch ({chat}, {repo}, {branch}): {e}");
+                    continue;
                 }
-            }
-
-            // check branches of the repo
-            let branches = {
-                let settings = resources.settings.read().await;
-                settings.branches.clone()
+                Ok(r) => r,
             };
-            for (branch, settings) in branches {
-                let result = match repo::branch_check(resources.clone(), &branch).await {
-                    Err(e) => {
-                        log::warn!("failed to check branch ({chat}, {repo}, {branch}): {e}");
-                        continue;
+            log::info!("finished branch check ({chat}, {repo}, {branch})");
+            if result.new != result.old {
+                let message = branch_check_message(&repo, &branch, &settings, &result);
+                let markup = subscribe_button_markup("b", &repo, &branch);
+                let mut send = bot
+                    .send_message(chat, message)
+                    .parse_mode(ParseMode::MarkdownV2);
+                match markup {
+                    Ok(m) => {
+                        send = send.reply_markup(m);
                     }
-                    Ok(r) => r,
-                };
-                log::info!("finished branch check ({chat}, {repo}, {branch})");
-                if result.new != result.old {
-                    let message = branch_check_message(&repo, &branch, &settings, &result);
-                    let markup = subscribe_button_markup("b", &repo, &branch);
-                    let mut send = bot
-                        .send_message(chat, message)
-                        .parse_mode(ParseMode::MarkdownV2);
+                    Err(e) => {
+                        log::error!("failed to create markup for ({chat}, {repo}, {branch}): {e}");
+                    }
+                }
+                send.await?;
+            }
+        }
+
+        // check commits of the repo
+        let commits = {
+            let settings = resources.settings.read().await;
+            settings.commits.clone()
+        };
+        for (commit, settings) in commits {
+            let result = match repo::commit_check(resources.clone(), &commit).await {
+                Err(e) => {
+                    log::warn!("failed to check commit ({chat}, {repo}, {commit}): {e}",);
+                    continue;
+                }
+                Ok(r) => r,
+            };
+            log::info!("finished commit check ({chat}, {repo}, {commit})");
+            if !result.new.is_empty() {
+                let message = commit_check_message(&repo, &commit, &settings, &result);
+                let mut send = bot
+                    .send_message(chat, message)
+                    .parse_mode(ParseMode::MarkdownV2)
+                    .disable_link_preview(true);
+                if result.removed_by_condition.is_none() {
+                    let markup = subscribe_button_markup("c", &repo, &commit);
                     match markup {
                         Ok(m) => {
                             send = send.reply_markup(m);
                         }
                         Err(e) => {
                             log::error!(
-                                "failed to create markup for ({chat}, {repo}, {branch}): {e}"
+                                "failed to create markup for ({chat}, {repo}, {commit}): {e}"
                             );
                         }
                     }
-                    send.await?;
                 }
-            }
-
-            // check commits of the repo
-            let commits = {
-                let settings = resources.settings.read().await;
-                settings.commits.clone()
-            };
-            for (commit, settings) in commits {
-                let result = match repo::commit_check(resources.clone(), &commit).await {
-                    Err(e) => {
-                        log::warn!("failed to check commit ({chat}, {repo}, {commit}): {e}",);
-                        continue;
-                    }
-                    Ok(r) => r,
-                };
-                log::info!("finished commit check ({chat}, {repo}, {commit})");
-                if !result.new.is_empty() {
-                    let message = commit_check_message(&repo, &commit, &settings, &result);
-                    let mut send = bot
-                        .send_message(chat, message)
-                        .parse_mode(ParseMode::MarkdownV2)
-                        .disable_link_preview(true);
-                    if result.removed_by_condition.is_none() {
-                        let markup = subscribe_button_markup("c", &repo, &commit);
-                        match markup {
-                            Ok(m) => {
-                                send = send.reply_markup(m);
-                            }
-                            Err(e) => {
-                                log::error!(
-                                    "failed to create markup for ({chat}, {repo}, {commit}): {e}"
-                                );
-                            }
-                        }
-                    }
-                    send.await?;
-                }
+                send.await?;
             }
         }
     }
-
     Ok(())
 }
 
