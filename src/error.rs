@@ -9,6 +9,8 @@ use crate::github::GitHubInfo;
 
 #[derive(Error, Debug)]
 pub enum Error {
+    #[error("unknown resource: {0}")]
+    UnknownResource(String),
     #[error("unclosed quote")]
     UnclosedQuote,
     #[error("bad escape")]
@@ -56,6 +58,8 @@ pub enum Error {
     UnknownPullRequest(u64),
     #[error("unknown branch: '{0}'")]
     UnknownBranch(String),
+    #[error("unknown branch in cache: '{0}'")]
+    UnknownBranchInCache(String),
     #[error("unknown repository: '{0}'")]
     UnknownRepository(String),
     #[error("commit already exists: '{0}'")]
@@ -108,6 +112,8 @@ pub enum Error {
     NoRepoHaveGitHubInfo(GitHubInfo),
     #[error("unsupported pr url: {0}")]
     UnsupportedPrUrl(String),
+    #[error("not in an admin chat")]
+    NotAdminChat,
 }
 
 impl Error {

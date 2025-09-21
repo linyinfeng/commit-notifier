@@ -8,6 +8,8 @@ pub struct Options {
     pub working_dir: PathBuf,
     #[arg(short, long)]
     pub cron: String,
+    #[arg(short, long)]
+    pub admin_chat_id: i64,
 }
 
 pub static OPTIONS: once_cell::sync::OnceCell<Options> = once_cell::sync::OnceCell::new();

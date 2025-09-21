@@ -14,6 +14,8 @@ use std::{ffi::OsString, iter};
             no_binary_name = true,
 )]
 pub enum Notifier {
+    #[command(about = "return current chat id")]
+    ChatId,
     #[command(about = "add a repository")]
     RepoAdd { name: String, url: String },
     #[command(about = "edit settings of a repository")]

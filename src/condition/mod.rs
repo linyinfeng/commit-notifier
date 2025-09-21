@@ -2,8 +2,7 @@ pub mod in_branch;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::Error;
-use crate::repo::results::CommitResults;
+use crate::{chat::results::CommitResults, error::Error};
 
 use self::in_branch::InBranchCondition;
 
