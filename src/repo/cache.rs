@@ -6,17 +6,22 @@ use crate::error::Error;
 
 pub fn initialize(cache: &Connection) -> Result<(), Error> {
     cache.execute(
-        "CREATE TABLE commits_cache (
-               branch        TEXT    NOT NULL,
-               commit_hash   TEXT    NOT NULL
-             )",
+        "CREATE TABLE IF NOT EXISTS commits_cache (
+            branch        TEXT    NOT NULL,
+            commit_hash   TEXT    NOT NULL
+        )",
         [],
     )?;
     cache.execute(
-        "CREATE TABLE branches (
-               branch           TEXT    NOT NULL PRIMARY KEY,
-               current_commit   TEXT    NOT NULL
-             )",
+        "CREATE TABLE IF NOT EXISTS branches (
+            branch           TEXT    NOT NULL PRIMARY KEY,
+            current_commit   TEXT    NOT NULL
+        )",
+        [],
+    )?;
+    cache.execute(
+        "CREATE INDEX IF NOT EXISTS idx_commit_branches
+         ON commits_cache (commit_hash)",
         [],
     )?;
 

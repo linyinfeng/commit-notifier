@@ -32,16 +32,13 @@ impl Resource<String> for RepoResources {
         // load repo
         let repo = Mutex::new(Repository::open(&paths.repo)?);
         // load cache
-        let cache_exists = paths.cache.is_file();
         let cache_cfg = deadpool_sqlite::Config::new(&paths.cache);
         let cache = cache_cfg.create_pool(deadpool_sqlite::Runtime::Tokio1)?;
-        if !cache_exists {
-            log::debug!("initializing cache for {name}...");
-            let conn = cache.get().await?;
-            conn.interact(|c| cache::initialize(c))
-                .await
-                .map_err(|e| Error::DBInteract(Mutex::new(e)))??;
-        }
+        log::debug!("initializing cache for {name}...");
+        let conn = cache.get().await?;
+        conn.interact(|c| cache::initialize(c))
+            .await
+            .map_err(|e| Error::DBInteract(Mutex::new(e)))??;
         // load settings
         let settings = RwLock::new(read_json(&paths.settings)?);
 
