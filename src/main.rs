@@ -10,6 +10,7 @@ mod resources;
 mod update;
 mod utils;
 
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::env;
 use std::fmt;
@@ -46,6 +47,7 @@ use crate::chat::settings::PullRequestSettings;
 use crate::chat::settings::Subscriber;
 use crate::condition::Action;
 use crate::condition::GeneralCondition;
+use crate::condition::in_branch::InBranchCondition;
 use crate::message::branch_check_message;
 use crate::message::commit_check_message;
 use crate::message::subscriber_from_msg;
@@ -447,8 +449,28 @@ async fn repo_add(bot: Bot, msg: Message, name: String, url: String) -> Result<(
     let github_info = Url::parse(&url)
         .ok()
         .and_then(|u| GitHubInfo::parse_from_url(u).ok());
+
     let settings = {
         let mut locked = resources.settings.write().await;
+        if let Some(info) = &github_info {
+            let repository = octocrab::instance().repos(&info.owner, &info.repo)
+                .get().await.map_err(|e| Error::Octocrab(Box::new(e)))?;
+            if let Some(default_branch) = repository.default_branch {
+                let default_regex_str = format!("^{}$", regex::escape(&default_branch));
+                let default_regex = Regex::new(&default_regex_str).map_err(Error::from)?;
+                let default_condition = ConditionSettings {
+                    condition: GeneralCondition::InBranch(InBranchCondition {
+                        branch_regex: default_regex.clone(),
+                    }),
+                };
+                locked.branch_regex = default_regex;
+                locked.conditions = {
+                    let mut map = BTreeMap::new();
+                    map.insert(format!("in-{default_branch}"), default_condition);
+                    map
+                };
+            }
+        }
         locked.github_info = github_info;
         locked.clone()
     };

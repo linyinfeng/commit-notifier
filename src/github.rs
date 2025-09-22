@@ -10,8 +10,8 @@ use crate::error::Error;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GitHubInfo {
-    owner: String,
-    repo: String,
+    pub owner: String,
+    pub repo: String,
 }
 
 impl Display for GitHubInfo {
