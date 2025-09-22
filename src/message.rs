@@ -10,7 +10,7 @@ use crate::{
     condition::Action,
     error::Error,
     repo::{pr_issue_url, resources::RepoResources},
-    utils::push_empty_line,
+    utils::empty_or_start_new_line,
 };
 
 pub fn commit_check_message(
@@ -75,7 +75,7 @@ pub fn commit_check_message_detail(
             .as_ref()
             .map(|u| format!("\n{}", markdown::escape(u.as_str())))
             .unwrap_or_default(),
-        notify = push_empty_line(&settings.notify.notify_markdown()),
+        notify = empty_or_start_new_line(&settings.notify.notify_markdown()),
         new = markdown_list(result.new.iter()),
         all = markdown_list(result.all.iter())
     )
@@ -98,7 +98,7 @@ pub async fn pr_issue_merged_message(
     Ok(format!(
         "{pretty_id} merged as `{commit}`{notify}",
         pretty_id = pr_issue_id_pretty(resources, id).await?,
-        notify = push_empty_line(&settings.notify.notify_markdown()),
+        notify = empty_or_start_new_line(&settings.notify.notify_markdown()),
     ))
 }
 
@@ -110,7 +110,7 @@ pub async fn pr_issue_closed_message(
     Ok(format!(
         "{pretty_id} has been closed{notify}",
         pretty_id = pr_issue_id_pretty(resources, id).await?,
-        notify = push_empty_line(&settings.notify.notify_markdown()),
+        notify = empty_or_start_new_line(&settings.notify.notify_markdown()),
     ))
 }
 
@@ -140,7 +140,7 @@ pub fn branch_check_message(
 ",
         repo = markdown::escape(repo),
         branch = markdown::escape(branch),
-        notify = push_empty_line(&settings.notify.notify_markdown()),
+        notify = empty_or_start_new_line(&settings.notify.notify_markdown()),
     )
 }
 

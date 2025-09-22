@@ -17,7 +17,7 @@ use crate::{
     error::Error,
     github::{self, GitHubInfo},
     repo::{cache::query_cache_commit, resources::RepoResources},
-    utils::push_empty_line,
+    utils::empty_or_start_new_line,
 };
 
 pub mod paths;
@@ -290,7 +290,7 @@ pub async fn merged_pr_to_commit(
     let comment = format!(
         "{title}{comment}",
         title = pr.title.as_deref().unwrap_or("untitled"),
-        comment = push_empty_line(&settings.notify.comment),
+        comment = empty_or_start_new_line(&settings.notify.comment),
     );
     let commit_settings = CommitSettings {
         url: Some(settings.url),

@@ -372,9 +372,17 @@ async fn list_for_admin(bot: Bot, msg: &Message) -> Result<(), CommandError> {
 
     let repos = repo::list().await?;
     for repo in repos {
-        result.push('*');
+        result.push_str("\\- *");
         result.push_str(&markdown::escape(&repo));
         result.push_str("*\n");
+        let settings_json = {
+            let resources = repo::resources(&repo).await?;
+            let settings = resources.settings.read().await;
+            serde_json::to_string(&*settings).map_err(Error::Serde)?
+        };
+        result.push_str("  ");
+        result.push_str(&markdown::escape(&settings_json));
+        result.push('\n');
     }
     if result.is_empty() {
         result.push_str("(nothing)\n");
@@ -441,7 +449,7 @@ async fn list_for_normal(bot: Bot, msg: &Message) -> Result<(), CommandError> {
     if result.is_empty() {
         result.push_str("\\(nothing\\)\n");
     }
-    reply_to_msg(&bot, msg, result)
+    reply_to_msg(&bot, msg, markdown::expandable_blockquote(&result))
         .parse_mode(ParseMode::MarkdownV2)
         .disable_link_preview(true)
         .await?;

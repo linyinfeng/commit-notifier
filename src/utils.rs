@@ -21,12 +21,12 @@ where
         .reply_parameters(ReplyParameters::new(msg.id))
 }
 
-pub fn push_empty_line(s: &str) -> String {
+pub fn empty_or_start_new_line(s: &str) -> String {
     let trimmed = s.trim().to_string();
     if trimmed.is_empty() {
         trimmed
     } else {
-        let mut result = "\n\n".to_string();
+        let mut result = "\n".to_string();
         result.push_str(&trimmed);
         result
     }
