@@ -166,6 +166,15 @@ async fn update_chat_repo_commit(
     commit: &str,
     settings: &CommitSettings,
 ) -> Result<(), CommandError> {
+    // check again commit existence after acquiring the lock
+    {
+        let _guard = resources.commit_lock(commit.to_string()).await;
+        let settings = resources.settings.read().await;
+        if !settings.commits.contains_key(commit) {
+            return Ok(())
+        }
+    }
+
     let result = chat::commit_check(resources, repo_resources, commit).await?;
     log::info!("finished commit check ({chat}, {repo}, {commit})");
     if !result.new.is_empty() {
@@ -198,6 +207,15 @@ async fn update_chat_repo_branch(
     branch: &str,
     settings: &BranchSettings,
 ) -> Result<(), CommandError> {
+    // check again commit existence after acquiring the lock
+    {
+        let _guard = resources.branch_lock(branch.to_string()).await;
+        let settings = resources.settings.read().await;
+        if !settings.branches.contains_key(branch) {
+            return Ok(())
+        }
+    }
+
     let result = chat::branch_check(resources, repo_resources, branch).await?;
     log::info!("finished branch check ({chat}, {repo}, {branch})");
     if result.new != result.old {
