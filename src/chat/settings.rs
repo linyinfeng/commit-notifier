@@ -4,21 +4,14 @@ use serde::{Deserialize, Serialize};
 use teloxide::utils::markdown;
 use url::Url;
 
-use crate::{condition::GeneralCondition, github::GitHubInfo};
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ChatRepoSettings {
-    pub branch_regex: String,
-    #[serde(default)]
-    pub github_info: Option<GitHubInfo>,
     #[serde(default)]
     pub pull_requests: BTreeMap<u64, PullRequestSettings>,
     #[serde(default)]
     pub commits: BTreeMap<String, CommitSettings>,
     #[serde(default)]
     pub branches: BTreeMap<String, BranchSettings>,
-    #[serde(default)]
-    pub conditions: BTreeMap<String, ConditionSettings>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,9 +83,4 @@ impl Subscriber {
             Subscriber::Telegram { username } => format!("@{}", markdown::escape(username)),
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConditionSettings {
-    pub condition: GeneralCondition,
 }

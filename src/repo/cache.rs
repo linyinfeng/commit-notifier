@@ -83,6 +83,15 @@ pub fn query_cache(cache: &Connection, branch: &str, commit: &str) -> Result<boo
     }
 }
 
+pub fn query_cache_commit(cache: &Connection, commit: &str) -> Result<BTreeSet<String>, Error> {
+    let mut stmt =
+        cache.prepare_cached("SELECT branch FROM commits_cache WHERE commit_hash = ?1")?;
+    log::trace!("query cache: {commit}");
+    Ok(stmt
+        .query_map(params!(commit), |row| row.get(0))?
+        .collect::<Result<_, _>>()?)
+}
+
 pub fn store_cache(cache: &Connection, branch: &str, commit: &str) -> Result<(), Error> {
     let mut stmt =
         cache.prepare_cached("INSERT INTO commits_cache (branch, commit_hash) VALUES (?1, ?2)")?;
@@ -97,22 +106,12 @@ where
     I: IntoIterator<Item = String>,
 {
     let mut count = 0usize;
-    let tx = cache.unchecked_transaction()?;
     for c in commits.into_iter() {
-        store_cache(&tx, branch, &c)?;
+        store_cache(cache, branch, &c)?;
         count += 1;
-        if count % 100000 == 0 {
+        if count.is_multiple_of(100000) {
             log::debug!("batch storing cache, current count: {count}",);
         }
     }
-    tx.commit()?;
-    Ok(())
-}
-
-pub fn remove_cache(cache: &Connection, branch: &str, commit: &str) -> Result<(), Error> {
-    let mut stmt =
-        cache.prepare_cached("DELETE FROM commits_cache WHERE branch = ?1 AND commit_hash = ?2")?;
-    log::trace!("delete cache: ({branch}, {commit})");
-    stmt.execute(params!(branch, commit))?;
     Ok(())
 }

@@ -7,10 +7,14 @@ mod message;
 mod options;
 mod repo;
 mod resources;
+mod update;
 mod utils;
 
+use std::collections::BTreeSet;
 use std::env;
+use std::fmt;
 use std::str::FromStr;
+use std::sync::LazyLock;
 
 use chrono::Utc;
 use cron::Schedule;
@@ -35,10 +39,19 @@ use teloxide::utils::markdown;
 use tokio::time::sleep;
 use url::Url;
 
+use crate::chat::settings::BranchSettings;
 use crate::chat::settings::CommitSettings;
 use crate::chat::settings::NotifySettings;
+use crate::chat::settings::PullRequestSettings;
+use crate::chat::settings::Subscriber;
+use crate::condition::Action;
+use crate::condition::GeneralCondition;
+use crate::message::branch_check_message;
 use crate::message::commit_check_message;
 use crate::message::subscriber_from_msg;
+use crate::repo::settings::ConditionSettings;
+use crate::update::update_and_report_error;
+use crate::utils::modify_subscriber_set;
 use crate::utils::reply_to_msg;
 
 #[derive(BotCommands, Clone, Debug)]
@@ -80,11 +93,20 @@ async fn run() {
             LoggingErrorHandler::with_custom_text("An error from the update listener"),
         ) => { },
     }
+
+    log::info!("cleaning up resources for chats");
+    if let Err(e) = chat::resources::RESOURCES_MAP.clear().await {
+        log::error!("failed to clear resources map for chats: {e}");
+    }
+    log::info!("cleaning up resources for repositories");
+    if let Err(e) = repo::resources::RESOURCES_MAP.clear().await {
+        log::error!("failed to clear resources map for repositories: {e}");
+    }
     log::info!("exit");
 }
 
 async fn answer(bot: Bot, msg: Message, bc: BCommand) -> ResponseResult<()> {
-    log::debug!("message: {msg:?}");
+    log::trace!("message: {msg:?}");
     log::trace!("bot command: {bc:?}");
     let BCommand::Notifier(input) = bc;
     let result = match command::parse(input) {
@@ -152,9 +174,6 @@ async fn answer(bot: Bot, msg: Message, bc: BCommand) -> ResponseResult<()> {
                 command::Notifier::ConditionRemove { repo, identifier } => {
                     condition_remove(bot, msg, repo, identifier).await
                 }
-                command::Notifier::ConditionTrigger { repo, identifier } => {
-                    condition_trigger(bot, msg, repo, identifier).await
-                }
                 command::Notifier::List => list(bot, msg).await,
             }
         }
@@ -192,69 +211,68 @@ async fn handle_callback_query_command_result(
     _bot: &Bot,
     query: &CallbackQuery,
 ) -> Result<String, CommandError> {
-    todo!()
-    // log::debug!("query = {query:?}");
-    // let (chat_id, username) = get_chat_id_and_username_from_query(query)?;
-    // let subscriber = Subscriber::Telegram { username };
-    // let _msg = query
-    //     .message
-    //     .as_ref()
-    //     .ok_or(Error::SubscribeCallbackNoMsgId)?;
-    // let data = query.data.as_ref().ok_or(Error::SubscribeCallbackNoData)?;
-    // let SubscribeTerm(kind, repo, id, subscribe) =
-    //     serde_json::from_str(data).map_err(Error::Serde)?;
-    // let unsubscribe = subscribe == 0;
-    // match kind.as_str() {
-    //     "b" => {
-    //         let resources = resources_helper_chat(chat_id, &repo).await?;
-    //         {
-    //             let mut settings = resources.settings.write().await;
-    //             let subscribers = &mut settings
-    //                 .branches
-    //                 .get_mut(&id)
-    //                 .ok_or_else(|| Error::UnknownBranch(id.clone()))?
-    //                 .notify
-    //                 .subscribers;
-    //             modify_subscriber_set(subscribers, subscriber, unsubscribe)?;
-    //         }
-    //         resources.save_settings().await?;
-    //     }
-    //     "c" => {
-    //         let resources = resources_helper_chat(chat_id, &repo).await?;
-    //         {
-    //             let mut settings = resources.settings.write().await;
-    //             let subscribers = &mut settings
-    //                 .commits
-    //                 .get_mut(&id)
-    //                 .ok_or_else(|| Error::UnknownCommit(id.clone()))?
-    //                 .notify
-    //                 .subscribers;
-    //             modify_subscriber_set(subscribers, subscriber, unsubscribe)?;
-    //         }
-    //         resources.save_settings().await?;
-    //     }
-    //     "p" => {
-    //         let pr_id: u64 = id.parse().map_err(Error::ParseInt)?;
-    //         let resources = resources_helper_chat(chat_id, &repo).await?;
-    //         {
-    //             let mut settings = resources.settings.write().await;
-    //             let subscribers = &mut settings
-    //                 .pull_requests
-    //                 .get_mut(&pr_id)
-    //                 .ok_or_else(|| Error::UnknownPullRequest(pr_id))?
-    //                 .notify
-    //                 .subscribers;
-    //             modify_subscriber_set(subscribers, subscriber, unsubscribe)?;
-    //         }
-    //         resources.save_settings().await?;
-    //     }
-    //     _ => Err(Error::SubscribeCallbackDataInvalidKind(kind))?,
-    // }
-    // if unsubscribe {
-    //     Ok(format!("unsubscribed from {repo}/{id}"))
-    // } else {
-    //     Ok(format!("subscribed to {repo}/{id}"))
-    // }
+    log::debug!("query = {query:?}");
+    let (chat_id, username) = get_chat_id_and_username_from_query(query)?;
+    let subscriber = Subscriber::Telegram { username };
+    let _msg = query
+        .message
+        .as_ref()
+        .ok_or(Error::SubscribeCallbackNoMsgId)?;
+    let data = query.data.as_ref().ok_or(Error::SubscribeCallbackNoData)?;
+    let SubscribeTerm(kind, repo, id, subscribe) =
+        serde_json::from_str(data).map_err(Error::Serde)?;
+    let unsubscribe = subscribe == 0;
+    match kind.as_str() {
+        "b" => {
+            let resources = chat::resources_chat_repo(chat_id, repo.clone()).await?;
+            {
+                let mut settings = resources.settings.write().await;
+                let subscribers = &mut settings
+                    .branches
+                    .get_mut(&id)
+                    .ok_or_else(|| Error::UnknownBranch(id.clone()))?
+                    .notify
+                    .subscribers;
+                modify_subscriber_set(subscribers, subscriber, unsubscribe)?;
+            }
+            resources.save_settings().await?;
+        }
+        "c" => {
+            let resources = chat::resources_chat_repo(chat_id, repo.clone()).await?;
+            {
+                let mut settings = resources.settings.write().await;
+                let subscribers = &mut settings
+                    .commits
+                    .get_mut(&id)
+                    .ok_or_else(|| Error::UnknownCommit(id.clone()))?
+                    .notify
+                    .subscribers;
+                modify_subscriber_set(subscribers, subscriber, unsubscribe)?;
+            }
+            resources.save_settings().await?;
+        }
+        "p" => {
+            let pr_id: u64 = id.parse().map_err(Error::ParseInt)?;
+            let resources = chat::resources_chat_repo(chat_id, repo.clone()).await?;
+            {
+                let mut settings = resources.settings.write().await;
+                let subscribers = &mut settings
+                    .pull_requests
+                    .get_mut(&pr_id)
+                    .ok_or_else(|| Error::UnknownPullRequest(pr_id))?
+                    .notify
+                    .subscribers;
+                modify_subscriber_set(subscribers, subscriber, unsubscribe)?;
+            }
+            resources.save_settings().await?;
+        }
+        _ => Err(Error::SubscribeCallbackDataInvalidKind(kind))?,
+    }
+    if unsubscribe {
+        Ok(format!("unsubscribed from {repo}/{id}"))
+    } else {
+        Ok(format!("subscribed to {repo}/{id}"))
+    }
 }
 
 fn get_chat_id_and_username_from_query(query: &CallbackQuery) -> Result<(ChatId, String), Error> {
@@ -280,6 +298,14 @@ impl From<Error> for CommandError {
 impl From<teloxide::RequestError> for CommandError {
     fn from(e: teloxide::RequestError) -> Self {
         CommandError::Teloxide(e)
+    }
+}
+impl fmt::Display for CommandError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            CommandError::Normal(e) => write!(f, "{e}"),
+            CommandError::Teloxide(e) => write!(f, "{e}"),
+        }
     }
 }
 
@@ -319,42 +345,17 @@ async fn schedule(bot: Bot) {
     }
 }
 
-async fn update_and_report_error(bot: Bot) -> Result<(), teloxide::RequestError> {
-    match update(bot.clone()).await {
-        Ok(r) => Ok(r),
-        Err(CommandError::Normal(e)) => {
-            log::error!("update error: {e}");
-            let options = options::get();
-            bot.send_message(ChatId(options.admin_chat_id), format!("update error: {e}"))
-                .await?;
-            Ok(())
-        }
-        Err(CommandError::Teloxide(e)) => Err(e),
-    }
-}
-
-async fn update(bot: Bot) -> Result<(), CommandError> {
-    log::info!("updating repositories...");
-    let repos = repo::list().await?;
-    for repo in repos {
-        let resources = repo::resources(&repo).await?;
-        repo::fetch_and_update_cache(&resources).await?;
-    }
-    Ok(())
-}
-
 async fn list(bot: Bot, msg: Message) -> Result<(), CommandError> {
     let options = options::get();
     let chat = msg.chat.id;
     if ChatId(options.admin_chat_id) == chat {
-        list_for_admin(bot, msg).await
-    } else {
-        list_for_normal(bot, msg).await
+        list_for_admin(bot.clone(), &msg).await?;
     }
+    list_for_normal(bot, &msg).await
 }
 
-async fn list_for_admin(bot: Bot, msg: Message) -> Result<(), CommandError> {
-    let chat = msg.chat.id;
+async fn list_for_admin(bot: Bot, msg: &Message) -> Result<(), CommandError> {
+    log::info!("list for admin");
     let mut result = String::new();
 
     let repos = repo::list().await?;
@@ -366,15 +367,72 @@ async fn list_for_admin(bot: Bot, msg: Message) -> Result<(), CommandError> {
     if result.is_empty() {
         result.push_str("(nothing)\n");
     }
-    reply_to_msg(&bot, &msg, result)
+    reply_to_msg(&bot, msg, result)
         .parse_mode(ParseMode::MarkdownV2)
         .await?;
 
     Ok(())
 }
 
-async fn list_for_normal(bot: Bot, msg: Message) -> Result<(), CommandError> {
-    todo!()
+async fn list_for_normal(bot: Bot, msg: &Message) -> Result<(), CommandError> {
+    let chat = msg.chat.id;
+    log::info!("list for chat: {chat}");
+    let mut result = String::new();
+
+    let repos = chat::repos(chat).await?;
+    for repo in repos {
+        result.push('*');
+        result.push_str(&markdown::escape(&repo));
+        result.push_str("*\n");
+
+        let resources = chat::resources_chat_repo(chat, repo).await?;
+        let settings = {
+            let locked = resources.settings.read().await;
+            locked.clone()
+        };
+
+        result.push_str("  *commits*:\n");
+        let commits = &settings.commits;
+        if commits.is_empty() {
+            result.push_str("  \\(nothing\\)\n");
+        }
+        for (commit, settings) in commits {
+            result.push_str(&format!(
+                "  \\- `{}`\n    {}\n",
+                markdown::escape(commit),
+                settings.notify.description_markdown()
+            ));
+        }
+        result.push_str("  *pull requests*:\n");
+        let pull_requests = &settings.pull_requests;
+        if pull_requests.is_empty() {
+            result.push_str("  \\(nothing\\)\n");
+        }
+        for (pr, settings) in pull_requests {
+            result.push_str(&format!(
+                "  \\- `{pr}`\n    {}\n",
+                markdown::escape(settings.url.as_str())
+            ));
+        }
+        result.push_str("  *branches*:\n");
+        let branches = &settings.branches;
+        if branches.is_empty() {
+            result.push_str("  \\(nothing\\)\n");
+        }
+        for branch in branches.keys() {
+            result.push_str(&format!("  \\- `{}`\n", markdown::escape(branch)));
+        }
+
+        result.push('\n');
+    }
+    if result.is_empty() {
+        result.push_str("\\(nothing\\)\n");
+    }
+    reply_to_msg(&bot, msg, result)
+        .parse_mode(ParseMode::MarkdownV2)
+        .await?;
+
+    Ok(())
 }
 
 async fn return_chat_id(bot: Bot, msg: Message) -> Result<(), CommandError> {
@@ -401,7 +459,7 @@ async fn repo_add(bot: Bot, msg: Message, name: String, url: String) -> Result<(
         format!("repository '{name}' added, settings:\n{settings:#?}"),
     )
     .await?;
-    todo!()
+    Ok(())
 }
 
 async fn repo_edit(
@@ -417,9 +475,8 @@ async fn repo_edit(
     let new_settings = {
         let mut locked = resources.settings.write().await;
         if let Some(r) = branch_regex {
-            // ensure regex is valid
-            let _: Regex = Regex::new(&format!("^{r}$")).map_err(Error::from)?;
-            locked.branch_regex = r;
+            let regex = Regex::new(&format!("^{r}$")).map_err(Error::from)?;
+            locked.branch_regex = regex;
         }
         if let Some(info) = github_info {
             locked.github_info = Some(info);
@@ -443,6 +500,37 @@ async fn repo_remove(bot: Bot, msg: Message, name: String) -> Result<(), Command
     ensure_admin_chat(&msg)?;
     repo::remove(&name).await?;
     reply_to_msg(&bot, &msg, format!("repository '{name}' removed")).await?;
+    Ok(())
+}
+
+async fn condition_add(
+    bot: Bot,
+    msg: Message,
+    repo: String,
+    identifier: String,
+    kind: condition::Kind,
+    expr: String,
+) -> Result<(), CommandError> {
+    ensure_admin_chat(&msg)?;
+    let resources = repo::resources(&repo).await?;
+    let settings = ConditionSettings {
+        condition: GeneralCondition::parse(kind, &expr)?,
+    };
+    repo::condition_add(&resources, &identifier, settings).await?;
+    reply_to_msg(&bot, &msg, format!("condition {identifier} added")).await?;
+    Ok(())
+}
+
+async fn condition_remove(
+    bot: Bot,
+    msg: Message,
+    repo: String,
+    identifier: String,
+) -> Result<(), CommandError> {
+    ensure_admin_chat(&msg)?;
+    let resources = repo::resources(&repo).await?;
+    repo::condition_remove(&resources, &identifier).await?;
+    reply_to_msg(&bot, &msg, format!("condition {identifier} removed")).await?;
     Ok(())
 }
 
@@ -503,13 +591,13 @@ async fn commit_check(
             .ok_or_else(|| Error::UnknownCommit(hash.clone()))?
             .clone()
     };
-    repo::fetch_and_update_cache(&repo_resources).await?;
-    let result = chat::commit_check(resources, &repo_resources, &hash).await?;
+    let result = chat::commit_check(&resources, &repo_resources, &hash).await?;
     let reply = commit_check_message(&repo, &hash, &commit_settings, &result);
     let mut send = reply_to_msg(&bot, &msg, reply)
         .parse_mode(ParseMode::MarkdownV2)
         .disable_link_preview(true);
-    if result.removed_by_condition.is_none() {
+    let remove_conditions: BTreeSet<&String> = result.conditions_of_action(Action::Remove);
+    if remove_conditions.is_empty() {
         send = try_attach_subscribe_button_markup(msg.chat.id, send, "c", &repo, &hash);
     }
     send.await?;
@@ -523,7 +611,21 @@ async fn commit_subscribe(
     hash: String,
     unsubscribe: bool,
 ) -> Result<(), CommandError> {
-    todo!()
+    let resources = chat::resources_msg_repo(&msg, repo.clone()).await?;
+    let subscriber = subscriber_from_msg(&msg).ok_or(Error::NoSubscriber)?;
+    {
+        let mut settings = resources.settings.write().await;
+        let subscribers = &mut settings
+            .commits
+            .get_mut(&hash)
+            .ok_or_else(|| Error::UnknownCommit(hash.clone()))?
+            .notify
+            .subscribers;
+        modify_subscriber_set(subscribers, subscriber, unsubscribe)?;
+    }
+    resources.save_settings().await?;
+    reply_to_msg(&bot, &msg, "done").await?;
+    Ok(())
 }
 
 async fn pr_add(
@@ -533,23 +635,113 @@ async fn pr_add(
     pr_id: Option<u64>,
     optional_comment: Option<String>,
 ) -> Result<(), CommandError> {
-    todo!()
+    let (repo, pr_id) = resolve_pr_repo_or_url(repo_or_url, pr_id).await?;
+    let resources = chat::resources_msg_repo(&msg, repo.clone()).await?;
+    let repo_resources = repo::resources(&repo).await?;
+    let github_info = {
+        let settings = repo_resources.settings.read().await;
+        settings
+            .github_info
+            .clone()
+            .ok_or_else(|| Error::NoGitHubInfo(repo_resources.name.clone()))?
+    };
+    let url_str = format!("https://github.com/{github_info}/pull/{pr_id}");
+    let url = Url::parse(&url_str).map_err(Error::UrlParse)?;
+    let subscribers = subscriber_from_msg(&msg).into_iter().collect();
+    let comment = optional_comment.unwrap_or_default();
+    let settings = PullRequestSettings {
+        url,
+        notify: NotifySettings {
+            comment,
+            subscribers,
+        },
+    };
+    match chat::pr_add(&resources, pr_id, settings).await {
+        Ok(()) => {
+            pr_check(bot, msg, repo, pr_id).await?;
+        }
+        Err(Error::PullRequestExists(_)) => {
+            pr_subscribe(bot.clone(), msg.clone(), repo.clone(), pr_id, false).await?;
+        }
+        Err(e) => return Err(e.into()),
+    };
+    Ok(())
 }
 
 async fn resolve_pr_repo_or_url(
-    chat: ChatId,
     repo_or_url: String,
     pr_id: Option<u64>,
 ) -> Result<(String, u64), Error> {
-    todo!()
+    static GITHUB_URL_REGEX: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"https://github\.com/([^/]+)/([^/]+)/pull/(\d+)"#).unwrap());
+    match pr_id {
+        Some(id) => Ok((repo_or_url, id)),
+        None => {
+            if let Some(captures) = GITHUB_URL_REGEX.captures(&repo_or_url) {
+                let owner = &captures[1];
+                let repo = &captures[2];
+                let github_info = GitHubInfo::new(owner.to_string(), repo.to_string());
+                let pr: u64 = captures[3].parse().map_err(Error::ParseInt)?;
+                let repos = repo::list().await?;
+                let mut repos_found = Vec::new();
+                for repo in repos {
+                    let resources = repo::resources(&repo).await?;
+                    let repo_github_info = &resources.settings.read().await.github_info;
+                    if repo_github_info.as_ref() == Some(&github_info) {
+                        repos_found.push(repo);
+                    }
+                }
+                if repos_found.is_empty() {
+                    return Err(Error::NoRepoHaveGitHubInfo(github_info));
+                } else if repos_found.len() != 1 {
+                    return Err(Error::MultipleReposHaveSameGitHubInfo(repos_found));
+                } else {
+                    let repo = repos_found.pop().unwrap();
+                    return Ok((repo, pr));
+                }
+            }
+            Err(Error::UnsupportedPrUrl(repo_or_url))
+        }
+    }
 }
 
 async fn pr_check(bot: Bot, msg: Message, repo: String, pr_id: u64) -> Result<(), CommandError> {
-    todo!()
+    let resources = chat::resources_msg_repo(&msg, repo.clone()).await?;
+    let repo_resources = repo::resources(&repo).await?;
+    match chat::pr_check(&resources, &repo_resources, pr_id).await {
+        Ok(Some(commit)) => {
+            reply_to_msg(
+                &bot,
+                &msg,
+                format!("pr {pr_id} has been merged (and removed)\ncommit `{commit}` added"),
+            )
+            .parse_mode(ParseMode::MarkdownV2)
+            .await?;
+            commit_check(bot, msg, repo, commit).await
+        }
+        Ok(None) => {
+            let mut send = reply_to_msg(&bot, &msg, format!("pr {pr_id} has not been merged yet"))
+                .parse_mode(ParseMode::MarkdownV2);
+            send = try_attach_subscribe_button_markup(
+                msg.chat.id,
+                send,
+                "p",
+                &repo,
+                &pr_id.to_string(),
+            );
+            send.await?;
+            Ok(())
+        }
+        Err(Error::CommitExists(commit)) => commit_subscribe(bot, msg, repo, commit, false).await,
+        Err(e) => Err(e.into()),
+    }
 }
 
 async fn pr_remove(bot: Bot, msg: Message, repo: String, pr_id: u64) -> Result<(), CommandError> {
-    todo!()
+    let resources = chat::resources_msg_repo(&msg, repo).await?;
+    chat::pr_remove(&resources, pr_id).await?;
+    reply_to_msg(&bot, &msg, format!("pr {pr_id} removed")).await?;
+    Ok(())
 }
 
 async fn pr_subscribe(
@@ -559,7 +751,21 @@ async fn pr_subscribe(
     pr_id: u64,
     unsubscribe: bool,
 ) -> Result<(), CommandError> {
-    todo!()
+    let resources = chat::resources_msg_repo(&msg, repo).await?;
+    let subscriber = subscriber_from_msg(&msg).ok_or(Error::NoSubscriber)?;
+    {
+        let mut settings = resources.settings.write().await;
+        let subscribers = &mut settings
+            .pull_requests
+            .get_mut(&pr_id)
+            .ok_or_else(|| Error::UnknownPullRequest(pr_id))?
+            .notify
+            .subscribers;
+        modify_subscriber_set(subscribers, subscriber, unsubscribe)?;
+    }
+    resources.save_settings().await?;
+    reply_to_msg(&bot, &msg, "done").await?;
+    Ok(())
 }
 
 async fn branch_add(
@@ -568,7 +774,15 @@ async fn branch_add(
     repo: String,
     branch: String,
 ) -> Result<(), CommandError> {
-    todo!()
+    let resources = chat::resources_msg_repo(&msg, repo.clone()).await?;
+    let settings = BranchSettings {
+        notify: Default::default(),
+    };
+    match chat::branch_add(&resources, &branch, settings).await {
+        Ok(()) => branch_check(bot, msg, repo, branch).await,
+        Err(Error::BranchExists(_)) => branch_subscribe(bot, msg, repo, branch, false).await,
+        Err(e) => Err(e.into()),
+    }
 }
 
 async fn branch_remove(
@@ -577,7 +791,10 @@ async fn branch_remove(
     repo: String,
     branch: String,
 ) -> Result<(), CommandError> {
-    todo!()
+    let resources = chat::resources_msg_repo(&msg, repo).await?;
+    chat::branch_remove(&resources, &branch).await?;
+    reply_to_msg(&bot, &msg, format!("branch {branch} removed")).await?;
+    Ok(())
 }
 
 async fn branch_check(
@@ -586,7 +803,23 @@ async fn branch_check(
     repo: String,
     branch: String,
 ) -> Result<(), CommandError> {
-    todo!()
+    let resources = chat::resources_msg_repo(&msg, repo.clone()).await?;
+    let repo_resources = repo::resources(&repo).await?;
+    let branch_settings = {
+        let settings = resources.settings.read().await;
+        settings
+            .branches
+            .get(&branch)
+            .ok_or_else(|| Error::UnknownBranch(branch.clone()))?
+            .clone()
+    };
+    let result = chat::branch_check(&resources, &repo_resources, &branch).await?;
+    let reply = branch_check_message(&repo, &branch, &branch_settings, &result);
+
+    let mut send = reply_to_msg(&bot, &msg, reply).parse_mode(ParseMode::MarkdownV2);
+    send = try_attach_subscribe_button_markup(msg.chat.id, send, "b", &repo, &branch);
+    send.await?;
+    Ok(())
 }
 
 async fn branch_subscribe(
@@ -596,36 +829,21 @@ async fn branch_subscribe(
     branch: String,
     unsubscribe: bool,
 ) -> Result<(), CommandError> {
-    todo!()
-}
-
-async fn condition_add(
-    bot: Bot,
-    msg: Message,
-    repo: String,
-    identifier: String,
-    kind: condition::Kind,
-    expr: String,
-) -> Result<(), CommandError> {
-    todo!()
-}
-
-async fn condition_remove(
-    bot: Bot,
-    msg: Message,
-    repo: String,
-    identifier: String,
-) -> Result<(), CommandError> {
-    todo!()
-}
-
-async fn condition_trigger(
-    bot: Bot,
-    msg: Message,
-    repo: String,
-    identifier: String,
-) -> Result<(), CommandError> {
-    todo!()
+    let resources = chat::resources_msg_repo(&msg, repo).await?;
+    let subscriber = subscriber_from_msg(&msg).ok_or(Error::NoSubscriber)?;
+    {
+        let mut settings = resources.settings.write().await;
+        let subscribers = &mut settings
+            .branches
+            .get_mut(&branch)
+            .ok_or_else(|| Error::UnknownBranch(branch.clone()))?
+            .notify
+            .subscribers;
+        modify_subscriber_set(subscribers, subscriber, unsubscribe)?;
+    }
+    resources.save_settings().await?;
+    reply_to_msg(&bot, &msg, "done").await?;
+    Ok(())
 }
 
 fn ensure_admin_chat(msg: &Message) -> Result<(), CommandError> {
@@ -642,12 +860,12 @@ fn try_attach_subscribe_button_markup(
     send: JsonRequest<SendMessage>,
     kind: &str,
     repo: &str,
-    hash: &str,
+    id: &str,
 ) -> JsonRequest<SendMessage> {
-    match subscribe_button_markup(kind, &repo, &hash) {
+    match subscribe_button_markup(kind, repo, id) {
         Ok(m) => send.reply_markup(m),
         Err(e) => {
-            log::error!("failed to create markup for ({chat}, {repo}, {hash}): {e}");
+            log::error!("failed to create markup for ({chat}, {repo}, {id}): {e}");
             send
         }
     }

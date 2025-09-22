@@ -1,32 +1,34 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::chat::results::CommitResults;
-use crate::condition::Condition;
+use crate::chat::results::CommitCheckResult;
+use crate::condition::{Action, Condition};
 use crate::error::Error;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InBranchCondition {
-    pub branch_regex: String,
+    #[serde(with = "serde_regex")]
+    pub branch_regex: Regex,
 }
 
 impl Condition for InBranchCondition {
-    fn meet(&self, result: &CommitResults) -> bool {
-        let regex = self.regex().unwrap();
-        result.branches.iter().any(|b| regex.is_match(b))
+    fn check(&self, check_results: &CommitCheckResult) -> Action {
+        if check_results
+            .all
+            .iter()
+            .any(|b| self.branch_regex.is_match(b))
+        {
+            Action::Remove
+        } else {
+            Action::None
+        }
     }
 }
 
 impl InBranchCondition {
     pub fn parse(s: &str) -> Result<Self, Error> {
-        let result = InBranchCondition {
-            branch_regex: s.to_string(),
-        };
-        let _ = result.regex()?;
-        Ok(result)
-    }
-
-    pub fn regex(&self) -> Result<Regex, Error> {
-        Ok(Regex::new(&format!("^{}$", self.branch_regex))?)
+        Ok(InBranchCondition {
+            branch_regex: Regex::new(&format!("^{s}$"))?,
+        })
     }
 }

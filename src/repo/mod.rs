@@ -18,6 +18,7 @@ use crate::{
         cache::batch_store_cache,
         paths::RepoPaths,
         resources::{RESOURCES_MAP, RepoResources},
+        settings::ConditionSettings,
     },
 };
 
@@ -27,11 +28,11 @@ pub mod resources;
 pub mod settings;
 
 pub async fn resources(repo: &str) -> Result<Arc<RepoResources>, Error> {
-    Ok(resources::RESOURCES_MAP.get(&repo.to_string()).await?)
+    resources::RESOURCES_MAP.get(&repo.to_string()).await
 }
 
 pub async fn create(name: &str, url: &str) -> Result<Output, Error> {
-    let paths = RepoPaths::new(name);
+    let paths = RepoPaths::new(name)?;
     log::info!("try clone '{url}' into {:?}", paths.repo);
     if paths.outer.exists() {
         return Err(Error::RepoExists(name.to_string()));
@@ -83,18 +84,13 @@ pub async fn list() -> Result<BTreeSet<String>, Error> {
     let mut result = BTreeSet::new();
     while let Some(entry) = dir.next_entry().await? {
         let filename = entry.file_name();
-        result.insert(
-            filename
-                .to_str()
-                .ok_or_else(|| Error::InvalidOsString(filename.clone()))?
-                .to_owned(),
-        );
+        result.insert(filename.into_string().map_err(Error::InvalidOsString)?);
     }
     Ok(result)
 }
 
-pub async fn fetch_and_update_cache(resources: &RepoResources) -> Result<(), Error> {
-    fetch(resources).await?;
+pub async fn fetch_and_update_cache(resources: Arc<RepoResources>) -> Result<(), Error> {
+    fetch(&resources).await?;
     update_cache(resources).await?;
     Ok(())
 }
@@ -125,12 +121,15 @@ pub async fn fetch(resources: &RepoResources) -> Result<Output, Error> {
     Ok(output)
 }
 
-pub async fn update_cache(resources: &RepoResources) -> Result<(), Error> {
-    let branches: BTreeSet<String> = watching_branches(resources).await?;
-    log::debug!(
-        "update cache for branches of {repo}: {branches:?}",
-        repo = resources.name
-    );
+pub async fn update_cache(resources: Arc<RepoResources>) -> Result<(), Error> {
+    // get the lock before update
+    let _guard = resources.cache_update_lock.lock().await;
+    let repo = &resources.name;
+    let branches: BTreeSet<String> = {
+        let repo_guard = resources.repo.lock().await;
+        watching_branches(&resources, &repo_guard).await?
+    };
+    log::debug!("update cache for branches of {repo}: {branches:?}");
     let cache = resources.cache().await?;
     let old_branches = cache
         .interact(move |c| cache::branches(c))
@@ -140,22 +139,20 @@ pub async fn update_cache(resources: &RepoResources) -> Result<(), Error> {
     let update_branches = branches.intersection(&old_branches);
     let mut remove_branches: BTreeSet<String> =
         old_branches.difference(&branches).cloned().collect();
-    let repo = resources.repo.lock().await;
     for b in update_branches {
-        let commit = branch_commit(&repo, b)?;
+        let repo_guard = resources.repo.lock().await;
+        let commit: Commit<'_> = branch_commit(&repo_guard, b)?;
         let b_cloned = b.clone();
         let old_commit_str = cache
             .interact(move |conn| cache::query_branch(conn, &b_cloned))
             .await
             .map_err(|e| Error::DBInteract(Mutex::new(e)))??;
-        let old_commit = repo.find_commit(Oid::from_str(&old_commit_str)?)?;
+        let old_commit = repo_guard.find_commit(Oid::from_str(&old_commit_str)?)?;
+
         if old_commit.id() == commit.id() {
-            log::debug!(
-                "branch ({repo}, {b}) does not change, skip...",
-                repo = resources.name
-            );
+            log::debug!("branch ({repo}, {b}) does not change, skip...");
         } else if is_parent(old_commit.clone(), commit.clone()) {
-            log::debug!("updating branch ({repo}, {b})...", repo = resources.name);
+            log::debug!("updating branch ({repo}, {b})...");
             let mut queue = VecDeque::new();
             let mut new_commits = BTreeSet::new();
             queue.push_back(commit.clone());
@@ -183,19 +180,21 @@ pub async fn update_cache(resources: &RepoResources) -> Result<(), Error> {
                     }
                 }
             }
-            log::debug!("find {} new commits", new_commits.len());
-            {
-                let b = b.clone();
-                cache
-                    .interact(move |conn| batch_store_cache(conn, &b, new_commits))
-                    .await
-                    .map_err(|e| Error::DBInteract(Mutex::new(e)))??;
-            }
+            log::info!(
+                "find {} new commits when updating ({repo}, {b})",
+                new_commits.len()
+            );
             {
                 let commit_str = commit.id().to_string();
                 let b = b.clone();
                 cache
-                    .interact(move |conn| cache::update_branch(conn, &b, &commit_str))
+                    .interact(move |conn| -> Result<(), Error> {
+                        let tx = conn.unchecked_transaction()?;
+                        batch_store_cache(&tx, &b, new_commits)?;
+                        cache::update_branch(conn, &b, &commit_str)?;
+                        tx.commit()?;
+                        Ok(())
+                    })
                     .await
                     .map_err(|e| Error::DBInteract(Mutex::new(e)))??;
             }
@@ -205,7 +204,7 @@ pub async fn update_cache(resources: &RepoResources) -> Result<(), Error> {
         }
     }
     for b in remove_branches {
-        log::debug!("removing branch ({repo}, {b})...", repo = resources.name);
+        log::info!("removing branch ({repo}, {b})...",);
         let b = b.clone();
         cache
             .interact(move |conn| cache::remove_branch(conn, &b))
@@ -213,21 +212,29 @@ pub async fn update_cache(resources: &RepoResources) -> Result<(), Error> {
             .map_err(|e| Error::DBInteract(Mutex::new(e)))??;
     }
     for b in new_branches {
-        log::debug!("adding branch ({repo}, {b})...", repo = resources.name);
-        let commit = branch_commit(&repo, &b)?;
-        let commits = gather_commits(commit.clone());
+        log::info!("adding branch ({repo}, {b})...");
+        let commit_id = {
+            let repo_guard = resources.repo.lock().await;
+            branch_commit(&repo_guard, &b)?.id()
+        };
+        let commits = {
+            let resources = resources.clone();
+            spawn_gather_commits(resources, commit_id).await?
+        };
         {
+            let commit_str = commit_id.to_string();
             let b = b.clone();
             cache
-                .interact(move |conn| batch_store_cache(conn, &b, commits))
+                .interact(move |conn| -> Result<(), Error> {
+                    let tx = conn.unchecked_transaction()?;
+                    batch_store_cache(conn, &b, commits)?;
+                    cache::store_branch(conn, &b, &commit_str)?;
+                    tx.commit()?;
+                    Ok(())
+                })
                 .await
                 .map_err(|e| Error::DBInteract(Mutex::new(e)))??;
         }
-        let commit_str = commit.id().to_string();
-        cache
-            .interact(move |conn| cache::store_branch(conn, &b, &commit_str))
-            .await
-            .map_err(|e| Error::DBInteract(Mutex::new(e)))??;
     }
     Ok(())
 }
@@ -237,6 +244,18 @@ fn branch_commit<'repo>(repo: &'repo Repository, branch: &str) -> Result<Commit<
     let branch = repo.find_branch(&full_name, git2::BranchType::Remote)?;
     let commit = branch.into_reference().peel_to_commit()?;
     Ok(commit)
+}
+
+pub async fn spawn_gather_commits(
+    resources: Arc<RepoResources>,
+    commit_id: Oid,
+) -> Result<BTreeSet<String>, Error> {
+    tokio::task::spawn_blocking(move || {
+        let repo = resources.repo.blocking_lock();
+        let commit = repo.find_commit(commit_id)?;
+        Ok(gather_commits(commit))
+    })
+    .await?
 }
 
 fn gather_commits<'repo>(commit: Commit<'repo>) -> BTreeSet<String> {
@@ -285,8 +304,10 @@ fn is_parent<'repo>(parent: Commit<'repo>, child: Commit<'repo>) -> bool {
     false
 }
 
-pub async fn watching_branches(resources: &RepoResources) -> Result<BTreeSet<String>, Error> {
-    let repo = resources.repo.lock().await;
+pub async fn watching_branches(
+    resources: &RepoResources,
+    repo: &Repository,
+) -> Result<BTreeSet<String>, Error> {
     let remote_branches = repo.branches(Some(git2::BranchType::Remote))?;
     let branch_regex = {
         let settings = resources.settings.read().await;
@@ -321,4 +342,30 @@ fn branch_name_map_filter(name: &str) -> Option<&str> {
     };
 
     Some(captures.get(1).unwrap().as_str())
+}
+
+pub async fn condition_add(
+    resources: &RepoResources,
+    identifier: &str,
+    settings: ConditionSettings,
+) -> Result<(), Error> {
+    {
+        let mut locked = resources.settings.write().await;
+        if locked.conditions.contains_key(identifier) {
+            return Err(Error::ConditionExists(identifier.to_owned()));
+        }
+        locked.conditions.insert(identifier.to_owned(), settings);
+    }
+    resources.save_settings().await
+}
+
+pub async fn condition_remove(resources: &RepoResources, identifier: &str) -> Result<(), Error> {
+    {
+        let mut locked = resources.settings.write().await;
+        if !locked.conditions.contains_key(identifier) {
+            return Err(Error::UnknownCondition(identifier.to_owned()));
+        }
+        locked.conditions.remove(identifier);
+    }
+    resources.save_settings().await
 }

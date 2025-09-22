@@ -4,10 +4,10 @@ use teloxide::{types::Message, utils::markdown};
 
 use crate::{
     chat::{
-        results::{BranchCheckResult, CommitCheckResult, ConditionCheckResult},
+        results::{BranchCheckResult, CommitCheckResult},
         settings::{BranchSettings, CommitSettings, PullRequestSettings, Subscriber},
     },
-    error::Error,
+    condition::Action,
     utils::push_empty_line,
 };
 
@@ -46,12 +46,15 @@ pub fn commit_check_message_detail(
     settings: &CommitSettings,
     result: &CommitCheckResult,
 ) -> String {
-    let auto_remove_msg = match &result.removed_by_condition {
-        None => String::new(),
-        Some(condition) => format!(
-            "\n*auto removed* by condition: `{}`",
-            markdown::escape(condition)
-        ),
+    let remove_conditions: BTreeSet<&String> = result.conditions_of_action(Action::Remove);
+    let auto_remove_msg = if remove_conditions.is_empty() {
+        "".to_string()
+    } else {
+        format!(
+            "\n*auto removed* by conditions:
+{}",
+            markdown_list(remove_conditions.iter())
+        )
     };
     format!(
         "{repo}/`{commit}`{url}{notify}
@@ -120,23 +123,6 @@ pub fn branch_check_message(
     )
 }
 
-pub fn condition_check_message(
-    repo: &str,
-    identifier: &str,
-    result: &ConditionCheckResult,
-) -> String {
-    format!(
-        "{repo}/`{identifier}`
-
-branches removed by this condition:
-{removed}
-",
-        repo = markdown::escape(repo),
-        identifier = markdown::escape(identifier),
-        removed = markdown_list(result.removed.iter()),
-    )
-}
-
 pub fn markdown_optional_commit(commit: Option<&str>) -> String {
     match &commit {
         None => "\\(nothing\\)".to_owned(),
@@ -185,23 +171,4 @@ pub fn subscriber_from_msg(msg: &Message) -> Option<Subscriber> {
             username: name.to_string(),
         }),
     }
-}
-
-pub fn modify_subscriber_set(
-    set: &mut BTreeSet<Subscriber>,
-    subscriber: Subscriber,
-    unsubscribe: bool,
-) -> Result<(), Error> {
-    if unsubscribe {
-        if !set.contains(&subscriber) {
-            return Err(Error::NotSubscribed);
-        }
-        set.remove(&subscriber);
-    } else {
-        if set.contains(&subscriber) {
-            return Err(Error::AlreadySubscribed);
-        }
-        set.insert(subscriber);
-    }
-    Ok(())
 }

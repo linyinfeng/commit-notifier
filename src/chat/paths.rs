@@ -6,7 +6,7 @@ use crate::{chat::Task, options};
 
 #[derive(Debug, Clone)]
 pub struct ChatRepoPaths {
-    pub chat: PathBuf,
+    // pub chat: PathBuf,
     pub repo: PathBuf,
     pub settings: PathBuf,
     pub results: PathBuf,
@@ -17,14 +17,18 @@ pub static GLOBAL_CHATS_OUTER: LazyLock<PathBuf> =
 
 impl ChatRepoPaths {
     pub fn new(task: &Task) -> ChatRepoPaths {
-        let chat_path = GLOBAL_CHATS_OUTER.join(Self::outer_dir_name(task.chat));
+        let chat_path = Self::outer_dir(task.chat);
         let repo = chat_path.join(&task.repo);
         Self {
-            chat: chat_path,
+            // chat: chat_path,
             settings: repo.join("settings.json"),
             results: repo.join("results.json"),
             repo,
         }
+    }
+
+    pub fn outer_dir(chat: ChatId) -> PathBuf {
+        GLOBAL_CHATS_OUTER.join(Self::outer_dir_name(chat))
     }
 
     fn outer_dir_name(chat: ChatId) -> PathBuf {

@@ -1,17 +1,11 @@
 use std::sync::LazyLock;
 
-use git2::Repository;
 use lockable::LockPool;
-use teloxide::types::ChatId;
-use tokio::{
-    fs::create_dir_all,
-    sync::{Mutex, RwLock},
-};
+use tokio::{fs::create_dir_all, sync::RwLock};
 
 use crate::{
     chat::{Task, paths::ChatRepoPaths, results::ChatRepoResults, settings::ChatRepoSettings},
     error::Error,
-    repo::{cache, paths::RepoPaths, settings::RepoSettings},
     resources::{Resource, ResourcesMap},
     utils::{read_json, write_json},
 };
@@ -31,7 +25,7 @@ pub struct ChatRepoResources {
 
 impl Resource<Task> for ChatRepoResources {
     async fn open(task: &Task) -> Result<Self, Error> {
-        let paths = ChatRepoPaths::new(&task);
+        let paths = ChatRepoPaths::new(task);
         if !paths.repo.is_dir() {
             create_dir_all(&paths.repo).await?;
         }

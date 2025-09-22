@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter};
@@ -9,6 +10,7 @@ use serde::de::DeserializeOwned;
 use teloxide::types::ReplyParameters;
 use teloxide::{payloads::SendMessage, prelude::*, requests::JsonRequest};
 
+use crate::chat::settings::Subscriber;
 use crate::error::Error;
 
 pub fn reply_to_msg<T>(bot: &Bot, msg: &Message, text: T) -> JsonRequest<SendMessage>
@@ -61,4 +63,23 @@ where
     file.lock_exclusive()?;
     let writer = BufWriter::new(file);
     Ok(serde_json::to_writer_pretty(writer, rs)?)
+}
+
+pub fn modify_subscriber_set(
+    set: &mut BTreeSet<Subscriber>,
+    subscriber: Subscriber,
+    unsubscribe: bool,
+) -> Result<(), Error> {
+    if unsubscribe {
+        if !set.contains(&subscriber) {
+            return Err(Error::NotSubscribed);
+        }
+        set.remove(&subscriber);
+    } else {
+        if set.contains(&subscriber) {
+            return Err(Error::AlreadySubscribed);
+        }
+        set.insert(subscriber);
+    }
+    Ok(())
 }

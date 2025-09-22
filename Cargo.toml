@@ -22,6 +22,7 @@ thiserror = "*"
 clap = { version = "*", features = [ "cargo", "derive" ] }
 regex = "*"
 serde_json = "*"
+serde_regex = "*"
 serde = "*"
 cron = "*"
 chrono = "*"

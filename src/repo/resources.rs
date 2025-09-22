@@ -19,12 +19,13 @@ pub struct RepoResources {
     pub paths: RepoPaths,
     pub repo: Mutex<Repository>,
     pub cache: Pool,
+    pub cache_update_lock: Mutex<()>,
     pub settings: RwLock<RepoSettings>,
 }
 
 impl Resource<String> for RepoResources {
     async fn open(name: &String) -> Result<Self, Error> {
-        let paths = RepoPaths::new(name);
+        let paths = RepoPaths::new(name)?;
         if !paths.outer.is_dir() {
             return Err(Error::UnknownRepository(name.to_string()));
         }
@@ -49,6 +50,7 @@ impl Resource<String> for RepoResources {
             paths,
             repo,
             cache,
+            cache_update_lock: Mutex::new(()),
             settings,
         })
     }

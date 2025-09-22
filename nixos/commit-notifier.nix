@@ -28,6 +28,12 @@ in {
         Update cron expression.
       '';
     };
+    adminChatId = lib.mkOption {
+      type = lib.types.str;
+      description = ''
+        Chat id of the admin chat.
+      '';
+    };
     tokenFiles = {
       telegramBot = lib.mkOption {
         type = lib.types.str;
@@ -61,7 +67,8 @@ in {
 
         "${cfg.package}/bin/commit-notifier" \
           --working-dir /var/lib/commit-notifier \
-          --cron "${cfg.cron}"
+          --cron "${cfg.cron}" \
+          --admin-chat-id="${cfg.adminChatId}"
       '';
 
       path = [

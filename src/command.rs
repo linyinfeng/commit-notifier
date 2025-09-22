@@ -90,8 +90,6 @@ pub enum Notifier {
     },
     #[command(about = "remove an auto clean condition")]
     ConditionRemove { repo: String, identifier: String },
-    #[command(about = "manually trigger an auto clean condition check")]
-    ConditionTrigger { repo: String, identifier: String },
     #[command(about = "list repositories and commits")]
     List,
 }
