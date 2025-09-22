@@ -738,7 +738,7 @@ async fn pr_check(bot: Bot, msg: Message, repo: String, pr_id: u64) -> Result<()
             reply_to_msg(
                 &bot,
                 &msg,
-                format!("pr {pr_id} has been merged (and removed)\ncommit `{commit}` added"),
+                format!("pr {pr_id} has been merged \\(and removed\\)\ncommit `{commit}` added"),
             )
             .parse_mode(ParseMode::MarkdownV2)
             .await?;

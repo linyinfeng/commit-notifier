@@ -37,15 +37,16 @@ pub async fn update_and_report_error(bot: Bot) -> Result<(), teloxide::RequestEr
 }
 
 async fn update(bot: Bot) -> Result<(), CommandError> {
-    log::info!("updating repositories...");
     let repos = repo::list().await?;
     for repo in repos {
+        log::info!("updating repository {repo}...");
         let resources = repo::resources(&repo).await?;
         log::info!("updating {repo}...");
         if let Err(e) = repo::fetch_and_update_cache(resources).await {
             log::error!("update error for repository {repo}: {e}");
         }
     }
+    log::info!("updating chats...");
     let chats = chat::chats().await?;
     for chat in chats {
         if let Err(e) = update_chat(bot.clone(), chat).await {
@@ -58,6 +59,7 @@ async fn update(bot: Bot) -> Result<(), CommandError> {
 async fn update_chat(bot: Bot, chat: ChatId) -> Result<(), CommandError> {
     let repos = chat::repos(chat).await?;
     for repo in repos {
+        log::info!("updating repository of chat ({chat}, {repo})...");
         if let Err(e) = update_chat_repo(bot.clone(), chat, &repo).await {
             log::error!("update error for repository of chat ({chat}, {repo}): {e}");
         }
