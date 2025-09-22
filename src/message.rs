@@ -93,6 +93,13 @@ pub fn pr_merged_message(
     )
 }
 
+pub fn pr_closed_message(repo: &str, pr: u64, settings: &PullRequestSettings) -> String {
+    format!(
+        "{repo}/{pr} has been closed{notify}",
+        notify = push_empty_line(&settings.notify.notify_markdown()),
+    )
+}
+
 pub fn branch_check_message(
     repo: &str,
     branch: &str,

@@ -40,6 +40,7 @@ use teloxide::utils::markdown;
 use tokio::time::sleep;
 use url::Url;
 
+use crate::chat::results::PRCheckResult;
 use crate::chat::settings::BranchSettings;
 use crate::chat::settings::CommitSettings;
 use crate::chat::settings::NotifySettings;
@@ -690,7 +691,7 @@ async fn pr_add(
             subscribers,
         },
     };
-    match chat::pr_add(&resources, pr_id, settings).await {
+    match chat::pr_add(&resources, &repo_resources, pr_id, settings).await {
         Ok(()) => {
             pr_check(bot, msg, repo, pr_id).await?;
         }
@@ -743,29 +744,44 @@ async fn pr_check(bot: Bot, msg: Message, repo: String, pr_id: u64) -> Result<()
     let resources = chat::resources_msg_repo(&msg, repo.clone()).await?;
     let repo_resources = repo::resources(&repo).await?;
     match chat::pr_check(&resources, &repo_resources, pr_id).await {
-        Ok(Some(commit)) => {
-            reply_to_msg(
-                &bot,
-                &msg,
-                format!("pr {pr_id} has been merged \\(and removed\\)\ncommit `{commit}` added"),
-            )
-            .parse_mode(ParseMode::MarkdownV2)
-            .await?;
-            commit_check(bot, msg, repo, commit).await
-        }
-        Ok(None) => {
-            let mut send = reply_to_msg(&bot, &msg, format!("pr {pr_id} has not been merged yet"))
-                .parse_mode(ParseMode::MarkdownV2);
-            send = try_attach_subscribe_button_markup(
-                msg.chat.id,
-                send,
-                "p",
-                &repo,
-                &pr_id.to_string(),
-            );
-            send.await?;
-            Ok(())
-        }
+        Ok(result) => match result {
+            PRCheckResult::Merged(commit) => {
+                reply_to_msg(
+                    &bot,
+                    &msg,
+                    format!(
+                        "pr {pr_id} has been merged \\(and removed\\)\ncommit `{commit}` added"
+                    ),
+                )
+                .parse_mode(ParseMode::MarkdownV2)
+                .await?;
+                commit_check(bot, msg, repo, commit).await
+            }
+            PRCheckResult::Closed => {
+                reply_to_msg(
+                    &bot,
+                    &msg,
+                    format!("pr {pr_id} has been closed \\(and removed\\)"),
+                )
+                .parse_mode(ParseMode::MarkdownV2)
+                .await?;
+                Ok(())
+            }
+            PRCheckResult::Waiting => {
+                let mut send =
+                    reply_to_msg(&bot, &msg, format!("pr {pr_id} has not been merged yet"))
+                        .parse_mode(ParseMode::MarkdownV2);
+                send = try_attach_subscribe_button_markup(
+                    msg.chat.id,
+                    send,
+                    "p",
+                    &repo,
+                    &pr_id.to_string(),
+                );
+                send.await?;
+                Ok(())
+            }
+        },
         Err(Error::CommitExists(commit)) => commit_subscribe(bot, msg, repo, commit, false).await,
         Err(e) => Err(e.into()),
     }

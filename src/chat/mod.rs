@@ -8,7 +8,9 @@ use crate::{
     chat::{
         paths::ChatRepoPaths,
         resources::ChatRepoResources,
-        results::{BranchCheckResult, BranchResults, CommitCheckResult, CommitResults},
+        results::{
+            BranchCheckResult, BranchResults, CommitCheckResult, CommitResults, PRCheckResult,
+        },
         settings::{BranchSettings, CommitSettings, NotifySettings, PullRequestSettings},
     },
     condition::{Action, Condition},
@@ -200,9 +202,18 @@ pub async fn commit_check(
 
 pub async fn pr_add(
     resources: &ChatRepoResources,
+    repo_resources: &RepoResources,
     pr_id: u64,
     settings: PullRequestSettings,
 ) -> Result<(), Error> {
+    let github_info = {
+        let locked = repo_resources.settings.read().await;
+        locked
+            .github_info
+            .clone()
+            .ok_or(Error::NoGitHubInfo(resources.task.repo.clone()))?
+    };
+    let _pr = github::get_pr(&github_info, pr_id).await?; // ensure the PR id is real
     {
         let mut locked = resources.settings.write().await;
         if locked.pull_requests.contains_key(&pr_id) {
@@ -228,7 +239,7 @@ pub async fn pr_check(
     resources: &ChatRepoResources,
     repo_resources: &RepoResources,
     id: u64,
-) -> Result<Option<String>, Error> {
+) -> Result<PRCheckResult, Error> {
     log::info!("checking PR ({task}, {id})", task = resources.task);
     let github_info = {
         let locked = repo_resources.settings.read().await;
@@ -248,9 +259,19 @@ pub async fn pr_check(
         };
         resources.save_settings().await?;
         let commit = merged_pr_to_commit(resources, github_info, id, settings).await?;
-        Ok(Some(commit))
+        Ok(PRCheckResult::Merged(commit))
+    } else if github::is_closed(&github_info, id).await? {
+        {
+            let mut locked = resources.settings.write().await;
+            locked
+                .pull_requests
+                .remove(&id)
+                .ok_or(Error::UnknownPullRequest(id))?;
+        };
+        resources.save_settings().await?;
+        Ok(PRCheckResult::Closed)
     } else {
-        Ok(None)
+        Ok(PRCheckResult::Waiting)
     }
 }
 

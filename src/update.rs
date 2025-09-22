@@ -13,10 +13,11 @@ use crate::{
     chat::{
         self,
         resources::ChatRepoResources,
+        results::PRCheckResult,
         settings::{BranchSettings, CommitSettings, PullRequestSettings},
     },
     condition::Action,
-    message::{branch_check_message, commit_check_message, pr_merged_message},
+    message::{branch_check_message, commit_check_message, pr_closed_message, pr_merged_message},
     options,
     repo::{self, resources::RepoResources},
     try_attach_subscribe_button_markup,
@@ -150,13 +151,23 @@ async fn update_chat_repo_pr(
 ) -> Result<(), CommandError> {
     let result = chat::pr_check(resources, repo_resources, pr).await?;
     log::info!("finished pr check ({chat}, {repo}, {pr})");
-    if let Some(commit) = result {
-        let message = pr_merged_message(repo, pr, settings, &commit);
-        bot.send_message(chat, message)
-            .parse_mode(ParseMode::MarkdownV2)
-            .await?;
+    match result {
+        PRCheckResult::Merged(commit) => {
+            let message = pr_merged_message(repo, pr, settings, &commit);
+            bot.send_message(chat, message)
+                .parse_mode(ParseMode::MarkdownV2)
+                .await?;
+            Ok(())
+        }
+        PRCheckResult::Closed => {
+            let message = pr_closed_message(repo, pr, settings);
+            bot.send_message(chat, message)
+                .parse_mode(ParseMode::MarkdownV2)
+                .await?;
+            Ok(())
+        }
+        PRCheckResult::Waiting => Ok(()),
     }
-    Ok(())
 }
 
 async fn update_chat_repo_commit(

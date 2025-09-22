@@ -41,3 +41,10 @@ pub struct BranchCheckResult {
     pub old: Option<String>,
     pub new: Option<String>,
 }
+
+#[derive(Debug)]
+pub enum PRCheckResult {
+    Merged(String),
+    Closed,
+    Waiting,
+}
