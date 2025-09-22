@@ -46,13 +46,13 @@ impl<I, R> ResourcesMap<I, R> {
     pub async fn remove<C, F>(&self, index: &I, cleanup: C) -> Result<(), Error>
     where
         I: Ord + Clone + fmt::Display + fmt::Debug,
-        C: FnOnce(Arc<R>) -> F,
+        C: FnOnce(R) -> F,
         F: Future<Output = Result<(), Error>>,
     {
         let mut map = self.map.lock().await;
         if let Some(arc) = map.remove(index) {
-            wait_for_resources_drop(index, arc.clone()).await;
-            cleanup(arc).await?; // run before the map unlock
+            let resource = wait_for_resources_drop(index, arc).await;
+            cleanup(resource).await?;
             Ok(())
         } else {
             Err(Error::UnknownResource(format!("{index}")))
@@ -65,22 +65,22 @@ impl<I, R> ResourcesMap<I, R> {
     {
         let mut map = self.map.lock().await;
         while let Some((task, resources)) = map.pop_first() {
-            wait_for_resources_drop(&task, resources).await;
+            let _resource = wait_for_resources_drop(&task, resources).await;
         }
         Ok(())
     }
 }
 
-pub async fn wait_for_resources_drop<I, R>(index: &I, mut arc: Arc<R>)
+pub async fn wait_for_resources_drop<I, R>(index: &I, mut arc: Arc<R>) -> R
 where
     I: fmt::Display,
 {
     loop {
         match Arc::try_unwrap(arc) {
-            Ok(_resource) => {
+            Ok(resource) => {
                 // do nothing
                 // just drop
-                break;
+                return resource;
             }
             Err(a) => {
                 arc = a;

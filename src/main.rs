@@ -453,8 +453,11 @@ async fn repo_add(bot: Bot, msg: Message, name: String, url: String) -> Result<(
     let settings = {
         let mut locked = resources.settings.write().await;
         if let Some(info) = &github_info {
-            let repository = octocrab::instance().repos(&info.owner, &info.repo)
-                .get().await.map_err(|e| Error::Octocrab(Box::new(e)))?;
+            let repository = octocrab::instance()
+                .repos(&info.owner, &info.repo)
+                .get()
+                .await
+                .map_err(|e| Error::Octocrab(Box::new(e)))?;
             if let Some(default_branch) = repository.default_branch {
                 let default_regex_str = format!("^{}$", regex::escape(&default_branch));
                 let default_regex = Regex::new(&default_regex_str).map_err(Error::from)?;

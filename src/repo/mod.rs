@@ -68,11 +68,13 @@ pub async fn create(name: &str, url: &str) -> Result<Output, Error> {
 }
 
 pub async fn remove(name: &str) -> Result<(), Error> {
+    let resource = resources(name).await?;
+    drop(resource);
     RESOURCES_MAP
-        .remove(&name.to_string(), async |r: Arc<RepoResources>| {
+        .remove(&name.to_string(), async |r: RepoResources| {
             log::info!("try remove repository outer directory: {:?}", r.paths.outer);
             remove_dir_all(&r.paths.outer).await?;
-            log::info!("repository outer directory removed: {:?}", &r.paths.outer);
+            log::info!("repository outer directory removed: {:?}", r.paths.outer);
             Ok(())
         })
         .await?;
