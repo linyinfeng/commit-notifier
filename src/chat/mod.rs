@@ -110,7 +110,6 @@ pub async fn commit_add(
     hash: &str,
     settings: CommitSettings,
 ) -> Result<(), Error> {
-    let _guard = resources.commit_lock(hash.to_string()).await;
     {
         let mut locked = resources.settings.write().await;
         if locked.commits.contains_key(hash) {
@@ -122,7 +121,6 @@ pub async fn commit_add(
 }
 
 pub async fn commit_remove(resources: &ChatRepoResources, hash: &str) -> Result<(), Error> {
-    let _guard = resources.commit_lock(hash.to_string()).await;
     {
         let mut settings = resources.settings.write().await;
         if !settings.commits.contains_key(hash) {
@@ -145,7 +143,6 @@ pub async fn commit_check(
     hash: &str,
 ) -> Result<CommitCheckResult, Error> {
     log::info!("checking commit ({task}, {hash})", task = resources.task);
-    let _guard = resources.commit_lock(hash.to_string()).await;
     let cache = repo_resources.cache().await?;
     let all_branches = {
         let commit = hash.to_string();
@@ -290,7 +287,6 @@ pub async fn branch_add(
     branch: &str,
     settings: BranchSettings,
 ) -> Result<(), Error> {
-    let _guard = resources.branch_lock(branch.to_string()).await;
     {
         let mut locked = resources.settings.write().await;
         if locked.branches.contains_key(branch) {
@@ -302,7 +298,6 @@ pub async fn branch_add(
 }
 
 pub async fn branch_remove(resources: &ChatRepoResources, branch: &str) -> Result<(), Error> {
-    let _guard = resources.branch_lock(branch.to_string()).await;
     {
         let mut locked = resources.settings.write().await;
         if !locked.branches.contains_key(branch) {
@@ -327,7 +322,6 @@ pub async fn branch_check(
         "checking branch ({task}, {branch_name})",
         task = resources.task
     );
-    let _guard = resources.branch_lock(branch_name.to_string()).await;
     let result = {
         let old_result = {
             let results = resources.results.read().await;

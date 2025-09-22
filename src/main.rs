@@ -573,6 +573,7 @@ async fn commit_add(
     url: Option<Url>,
 ) -> Result<(), CommandError> {
     let resources = chat::resources_msg_repo(&msg, repo.clone()).await?;
+    let _guard = resources.commit_lock(hash.clone()).await;
     let subscribers = subscriber_from_msg(&msg).into_iter().collect();
     let settings = CommitSettings {
         url,
@@ -600,6 +601,7 @@ async fn commit_remove(
     hash: String,
 ) -> Result<(), CommandError> {
     let resources = chat::resources_msg_repo(&msg, repo.clone()).await?;
+    let _guard = resources.commit_lock(hash.clone()).await;
     chat::commit_remove(&resources, &hash).await?;
     reply_to_msg(&bot, &msg, format!("commit {hash} removed")).await?;
     Ok(())
@@ -612,6 +614,7 @@ async fn commit_check(
     hash: String,
 ) -> Result<(), CommandError> {
     let resources = chat::resources_msg_repo(&msg, repo.clone()).await?;
+    let _guard = resources.commit_lock(hash.clone()).await;
     let repo_resources = repo::resources(&repo).await?;
     let commit_settings = {
         let settings = resources.settings.read().await;
@@ -642,6 +645,7 @@ async fn commit_subscribe(
     unsubscribe: bool,
 ) -> Result<(), CommandError> {
     let resources = chat::resources_msg_repo(&msg, repo.clone()).await?;
+    let _guard = resources.commit_lock(hash.clone()).await;
     let subscriber = subscriber_from_msg(&msg).ok_or(Error::NoSubscriber)?;
     {
         let mut settings = resources.settings.write().await;
@@ -805,6 +809,7 @@ async fn branch_add(
     branch: String,
 ) -> Result<(), CommandError> {
     let resources = chat::resources_msg_repo(&msg, repo.clone()).await?;
+    let _guard = resources.branch_lock(branch.clone()).await;
     let settings = BranchSettings {
         notify: Default::default(),
     };
@@ -822,6 +827,7 @@ async fn branch_remove(
     branch: String,
 ) -> Result<(), CommandError> {
     let resources = chat::resources_msg_repo(&msg, repo).await?;
+    let _guard = resources.branch_lock(branch.clone()).await;
     chat::branch_remove(&resources, &branch).await?;
     reply_to_msg(&bot, &msg, format!("branch {branch} removed")).await?;
     Ok(())
@@ -834,6 +840,7 @@ async fn branch_check(
     branch: String,
 ) -> Result<(), CommandError> {
     let resources = chat::resources_msg_repo(&msg, repo.clone()).await?;
+    let _guard = resources.branch_lock(branch.clone()).await;
     let repo_resources = repo::resources(&repo).await?;
     let branch_settings = {
         let settings = resources.settings.read().await;
@@ -860,6 +867,7 @@ async fn branch_subscribe(
     unsubscribe: bool,
 ) -> Result<(), CommandError> {
     let resources = chat::resources_msg_repo(&msg, repo).await?;
+    let _guard = resources.branch_lock(branch.clone()).await;
     let subscriber = subscriber_from_msg(&msg).ok_or(Error::NoSubscriber)?;
     {
         let mut settings = resources.settings.write().await;
