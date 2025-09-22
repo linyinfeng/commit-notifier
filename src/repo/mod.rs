@@ -34,7 +34,7 @@ pub async fn resources(repo: &str) -> Result<Arc<RepoResources>, Error> {
 pub async fn create(name: &str, url: &str) -> Result<Output, Error> {
     let paths = RepoPaths::new(name)?;
     log::info!("try clone '{url}' into {:?}", paths.repo);
-    if paths.outer.exists() {
+    if paths.repo.exists() {
         return Err(Error::RepoExists(name.to_string()));
     }
     create_dir_all(&paths.outer).await?;
