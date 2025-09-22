@@ -28,7 +28,7 @@ impl Condition for InBranchCondition {
 impl InBranchCondition {
     pub fn parse(s: &str) -> Result<Self, Error> {
         Ok(InBranchCondition {
-            branch_regex: Regex::new(&format!("^{s}$"))?,
+            branch_regex: Regex::new(&format!("^({s})$"))?,
         })
     }
 }

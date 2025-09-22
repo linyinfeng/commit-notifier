@@ -328,6 +328,11 @@ fn octocrab_initialize() {
 }
 
 async fn schedule(bot: Bot) {
+    // always update once on startup
+    if let Err(e) = update_and_report_error(bot.clone()).await {
+        log::error!("teloxide error in update: {e}");
+    }
+
     let expression = &options::get().cron;
     let schedule = Schedule::from_str(expression).expect("cron expression");
     for datetime in schedule.upcoming(Utc) {
@@ -459,7 +464,7 @@ async fn repo_add(bot: Bot, msg: Message, name: String, url: String) -> Result<(
                 .await
                 .map_err(|e| Error::Octocrab(Box::new(e)))?;
             if let Some(default_branch) = repository.default_branch {
-                let default_regex_str = format!("^{}$", regex::escape(&default_branch));
+                let default_regex_str = format!("^({})$", regex::escape(&default_branch));
                 let default_regex = Regex::new(&default_regex_str).map_err(Error::from)?;
                 let default_condition = ConditionSettings {
                     condition: GeneralCondition::InBranch(InBranchCondition {
@@ -500,7 +505,7 @@ async fn repo_edit(
     let new_settings = {
         let mut locked = resources.settings.write().await;
         if let Some(r) = branch_regex {
-            let regex = Regex::new(&format!("^{r}$")).map_err(Error::from)?;
+            let regex = Regex::new(&format!("^({r})$")).map_err(Error::from)?;
             locked.branch_regex = regex;
         }
         if let Some(info) = github_info {
