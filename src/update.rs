@@ -76,7 +76,7 @@ async fn update_chat_repo(bot: Bot, chat: ChatId, repo: &str) -> Result<(), Comm
     let resources = chat::resources_chat_repo(chat, repo.to_string()).await?;
     let repo_resources = repo::resources(repo).await?;
 
-    // check pull requests before checking commits
+    // check pull requests/issues before checking commits
     let pr_issues = {
         let settings = resources.settings.read().await;
         settings.pr_issues.clone()

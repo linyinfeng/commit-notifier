@@ -54,16 +54,16 @@ pub enum Error {
     Serde(#[from] serde_json::Error),
     #[error("unknown commit: '{0}'")]
     UnknownCommit(String),
-    #[error("unknown pull request: '{0}'")]
-    UnknownPullRequest(u64),
+    #[error("unknown PR/issue: '{0}'")]
+    UnknownPRIssue(u64),
     #[error("unknown branch: '{0}'")]
     UnknownBranch(String),
     #[error("unknown repository: '{0}'")]
     UnknownRepository(String),
     #[error("commit already exists: '{0}'")]
     CommitExists(String),
-    #[error("pull request already exists: '{0}'")]
-    PullRequestExists(u64),
+    #[error("PR/issue already exists: '{0}'")]
+    PRIssueExists(u64),
     #[error("branch already exists: '{0}'")]
     BranchExists(String),
     #[error("invalid os string: '{0:?}'")]

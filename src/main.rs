@@ -259,14 +259,14 @@ async fn handle_callback_query_command_result(
             resources.save_settings().await?;
         }
         "p" => {
-            let pr_id: u64 = id.parse().map_err(Error::ParseInt)?;
+            let issue_id: u64 = id.parse().map_err(Error::ParseInt)?;
             let resources = chat::resources_chat_repo(chat_id, repo.clone()).await?;
             {
                 let mut settings = resources.settings.write().await;
                 let subscribers = &mut settings
                     .pr_issues
-                    .get_mut(&pr_id)
-                    .ok_or_else(|| Error::UnknownPullRequest(pr_id))?
+                    .get_mut(&issue_id)
+                    .ok_or_else(|| Error::UnknownPRIssue(issue_id))?
                     .notify
                     .subscribers;
                 modify_subscriber_set(subscribers, subscriber, unsubscribe)?;
@@ -416,7 +416,7 @@ async fn list_for_normal(bot: Bot, msg: &Message) -> Result<(), CommandError> {
                 settings.notify.description_markdown()
             ));
         }
-        result.push_str("  *pull requests*:\n");
+        result.push_str("  *PRs/issues*:\n");
         let pr_issues = &settings.pr_issues;
         if pr_issues.is_empty() {
             result.push_str("  \\(nothing\\)\n");
@@ -693,7 +693,7 @@ async fn pr_issue_add(
         Ok(()) => {
             pr_issue_check(bot, msg, repo, id).await?;
         }
-        Err(Error::PullRequestExists(_)) => {
+        Err(Error::PRIssueExists(_)) => {
             pr_issue_subscribe(bot.clone(), msg.clone(), repo.clone(), id, false).await?;
         }
         Err(e) => return Err(e.into()),
@@ -821,7 +821,7 @@ async fn pr_issue_subscribe(
         let subscribers = &mut settings
             .pr_issues
             .get_mut(&pr_id)
-            .ok_or_else(|| Error::UnknownPullRequest(pr_id))?
+            .ok_or_else(|| Error::UnknownPRIssue(pr_id))?
             .notify
             .subscribers;
         modify_subscriber_set(subscribers, subscriber, unsubscribe)?;

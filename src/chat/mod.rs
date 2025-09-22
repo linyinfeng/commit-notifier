@@ -218,7 +218,7 @@ pub async fn pr_issue_add(
     {
         let mut locked = resources.settings.write().await;
         if locked.pr_issues.contains_key(&id) {
-            return Err(Error::PullRequestExists(id));
+            return Err(Error::PRIssueExists(id));
         }
         locked.pr_issues.insert(id, settings);
     }
@@ -229,7 +229,7 @@ pub async fn pr_issue_remove(resources: &ChatRepoResources, id: u64) -> Result<(
     {
         let mut locked = resources.settings.write().await;
         if !locked.pr_issues.contains_key(&id) {
-            return Err(Error::UnknownPullRequest(id));
+            return Err(Error::UnknownPRIssue(id));
         }
         locked.pr_issues.remove(&id);
     }
@@ -256,7 +256,7 @@ pub async fn pr_issue_check(
             locked
                 .pr_issues
                 .remove(&id)
-                .ok_or(Error::UnknownPullRequest(id))?;
+                .ok_or(Error::UnknownPRIssue(id))?;
         };
         resources.save_settings().await?;
         return Ok(PRIssueCheckResult::Closed);
@@ -268,7 +268,7 @@ pub async fn pr_issue_check(
             locked
                 .pr_issues
                 .remove(&id)
-                .ok_or(Error::UnknownPullRequest(id))?
+                .ok_or(Error::UnknownPRIssue(id))?
         };
         resources.save_settings().await?;
         let commit = merged_pr_to_commit(resources, github_info, id, settings).await?;

@@ -6,7 +6,7 @@ use url::Url;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ChatRepoSettings {
-    #[serde(default, alias="pull_requests")]
+    #[serde(default, alias = "pull_requests")]
     pub pr_issues: BTreeMap<u64, PRIssueSettings>,
     #[serde(default)]
     pub commits: BTreeMap<String, CommitSettings>,
