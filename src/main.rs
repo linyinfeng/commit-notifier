@@ -21,15 +21,24 @@ use serde::Deserialize;
 use serde::Serialize;
 use teloxide::dispatching::dialogue::GetChatId;
 use teloxide::payloads;
+use teloxide::payloads::SendMessage;
 use teloxide::prelude::*;
+use teloxide::requests::JsonRequest;
+use teloxide::sugar::request::RequestLinkPreviewExt;
 use teloxide::types::InlineKeyboardButton;
 use teloxide::types::InlineKeyboardButtonKind;
 use teloxide::types::InlineKeyboardMarkup;
+use teloxide::types::ParseMode;
 use teloxide::update_listeners;
 use teloxide::utils::command::BotCommands;
+use teloxide::utils::markdown;
 use tokio::time::sleep;
 use url::Url;
 
+use crate::chat::settings::CommitSettings;
+use crate::chat::settings::NotifySettings;
+use crate::message::commit_check_message;
+use crate::message::subscriber_from_msg;
 use crate::utils::reply_to_msg;
 
 #[derive(BotCommands, Clone, Debug)]
@@ -328,13 +337,43 @@ async fn update(bot: Bot) -> Result<(), CommandError> {
     log::info!("updating repositories...");
     let repos = repo::list().await?;
     for repo in repos {
-        let resources = repo::resources::RESOURCES_MAP.get(&repo).await?;
+        let resources = repo::resources(&repo).await?;
         repo::fetch_and_update_cache(&resources).await?;
     }
     Ok(())
 }
 
 async fn list(bot: Bot, msg: Message) -> Result<(), CommandError> {
+    let options = options::get();
+    let chat = msg.chat.id;
+    if ChatId(options.admin_chat_id) == chat {
+        list_for_admin(bot, msg).await
+    } else {
+        list_for_normal(bot, msg).await
+    }
+}
+
+async fn list_for_admin(bot: Bot, msg: Message) -> Result<(), CommandError> {
+    let chat = msg.chat.id;
+    let mut result = String::new();
+
+    let repos = repo::list().await?;
+    for repo in repos {
+        result.push('*');
+        result.push_str(&markdown::escape(&repo));
+        result.push_str("*\n");
+    }
+    if result.is_empty() {
+        result.push_str("(nothing)\n");
+    }
+    reply_to_msg(&bot, &msg, result)
+        .parse_mode(ParseMode::MarkdownV2)
+        .await?;
+
+    Ok(())
+}
+
+async fn list_for_normal(bot: Bot, msg: Message) -> Result<(), CommandError> {
     todo!()
 }
 
@@ -346,7 +385,7 @@ async fn return_chat_id(bot: Bot, msg: Message) -> Result<(), CommandError> {
 async fn repo_add(bot: Bot, msg: Message, name: String, url: String) -> Result<(), CommandError> {
     ensure_admin_chat(&msg)?;
     let _output = repo::create(&name, &url).await?;
-    let resources = repo::resources::RESOURCES_MAP.get(&name).await?;
+    let resources = repo::resources(&name).await?;
     let github_info = Url::parse(&url)
         .ok()
         .and_then(|u| GitHubInfo::parse_from_url(u).ok());
@@ -374,7 +413,7 @@ async fn repo_edit(
     clear_github_info: bool,
 ) -> Result<(), CommandError> {
     ensure_admin_chat(&msg)?;
-    let resources = repo::resources::RESOURCES_MAP.get(&name).await?;
+    let resources = repo::resources(&name).await?;
     let new_settings = {
         let mut locked = resources.settings.write().await;
         if let Some(r) = branch_regex {
@@ -415,7 +454,25 @@ async fn commit_add(
     comment: String,
     url: Option<Url>,
 ) -> Result<(), CommandError> {
-    todo!()
+    let resources = chat::resources_msg_repo(&msg, repo.clone()).await?;
+    let subscribers = subscriber_from_msg(&msg).into_iter().collect();
+    let settings = CommitSettings {
+        url,
+        notify: NotifySettings {
+            comment,
+            subscribers,
+        },
+    };
+    match chat::commit_add(&resources, &hash, settings).await {
+        Ok(()) => {
+            commit_check(bot, msg, repo, hash).await?;
+        }
+        Err(Error::CommitExists(_)) => {
+            commit_subscribe(bot.clone(), msg.clone(), repo.clone(), hash.clone(), false).await?;
+        }
+        Err(e) => return Err(e.into()),
+    }
+    Ok(())
 }
 
 async fn commit_remove(
@@ -424,7 +481,10 @@ async fn commit_remove(
     repo: String,
     hash: String,
 ) -> Result<(), CommandError> {
-    todo!()
+    let resources = chat::resources_msg_repo(&msg, repo.clone()).await?;
+    chat::commit_remove(&resources, &hash).await?;
+    reply_to_msg(&bot, &msg, format!("commit {hash} removed")).await?;
+    Ok(())
 }
 
 async fn commit_check(
@@ -433,7 +493,27 @@ async fn commit_check(
     repo: String,
     hash: String,
 ) -> Result<(), CommandError> {
-    todo!()
+    let resources = chat::resources_msg_repo(&msg, repo.clone()).await?;
+    let repo_resources = repo::resources(&repo).await?;
+    let commit_settings = {
+        let settings = resources.settings.read().await;
+        settings
+            .commits
+            .get(&hash)
+            .ok_or_else(|| Error::UnknownCommit(hash.clone()))?
+            .clone()
+    };
+    repo::fetch_and_update_cache(&repo_resources).await?;
+    let result = chat::commit_check(resources, &repo_resources, &hash).await?;
+    let reply = commit_check_message(&repo, &hash, &commit_settings, &result);
+    let mut send = reply_to_msg(&bot, &msg, reply)
+        .parse_mode(ParseMode::MarkdownV2)
+        .disable_link_preview(true);
+    if result.removed_by_condition.is_none() {
+        send = try_attach_subscribe_button_markup(msg.chat.id, send, "c", &repo, &hash);
+    }
+    send.await?;
+    Ok(())
 }
 
 async fn commit_subscribe(
@@ -554,6 +634,22 @@ fn ensure_admin_chat(msg: &Message) -> Result<(), CommandError> {
         Ok(())
     } else {
         Err(Error::NotAdminChat.into())
+    }
+}
+
+fn try_attach_subscribe_button_markup(
+    chat: ChatId,
+    send: JsonRequest<SendMessage>,
+    kind: &str,
+    repo: &str,
+    hash: &str,
+) -> JsonRequest<SendMessage> {
+    match subscribe_button_markup(kind, &repo, &hash) {
+        Ok(m) => send.reply_markup(m),
+        Err(e) => {
+            log::error!("failed to create markup for ({chat}, {repo}, {hash}): {e}");
+            send
+        }
     }
 }
 

@@ -26,13 +26,17 @@ pub mod paths;
 pub mod resources;
 pub mod settings;
 
+pub async fn resources(repo: &str) -> Result<Arc<RepoResources>, Error> {
+    Ok(resources::RESOURCES_MAP.get(&repo.to_string()).await?)
+}
+
 pub async fn create(name: &str, url: &str) -> Result<Output, Error> {
     let paths = RepoPaths::new(name);
     log::info!("try clone '{url}' into {:?}", paths.repo);
     if paths.outer.exists() {
         return Err(Error::RepoExists(name.to_string()));
     }
-    create_dir_all(paths.outer).await?;
+    create_dir_all(&paths.outer).await?;
     let output = {
         let url = url.to_owned();
         let path = paths.repo.clone();
