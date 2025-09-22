@@ -25,7 +25,7 @@ pub struct ChatRepoResources {
 
 impl Resource<Task> for ChatRepoResources {
     async fn open(task: &Task) -> Result<Self, Error> {
-        let paths = ChatRepoPaths::new(task);
+        let paths = ChatRepoPaths::new(task)?;
         if !paths.repo.is_dir() {
             create_dir_all(&paths.repo).await?;
         }

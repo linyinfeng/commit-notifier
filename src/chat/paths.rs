@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::LazyLock};
 
 use teloxide::types::ChatId;
 
-use crate::{chat::Task, options};
+use crate::{chat::Task, error::Error, options};
 
 #[derive(Debug, Clone)]
 pub struct ChatRepoPaths {
@@ -16,15 +16,18 @@ pub static GLOBAL_CHATS_OUTER: LazyLock<PathBuf> =
     LazyLock::new(|| options::get().working_dir.join("chats"));
 
 impl ChatRepoPaths {
-    pub fn new(task: &Task) -> ChatRepoPaths {
+    pub fn new(task: &Task) -> Result<ChatRepoPaths, Error> {
         let chat_path = Self::outer_dir(task.chat);
+        if !chat_path.is_dir() {
+            return Err(Error::NotInAllowList(task.chat));
+        }
         let repo = chat_path.join(&task.repo);
-        Self {
+        Ok(Self {
             // chat: chat_path,
             settings: repo.join("settings.json"),
             results: repo.join("results.json"),
             repo,
-        }
+        })
     }
 
     pub fn outer_dir(chat: ChatId) -> PathBuf {

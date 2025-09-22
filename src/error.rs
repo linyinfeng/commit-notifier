@@ -33,6 +33,8 @@ pub enum Error {
     TaskJoin(#[from] tokio::task::JoinError),
     #[error("invalid name: {0}")]
     Name(String),
+    #[error("chat id {0} is not in allow list")]
+    NotInAllowList(ChatId),
     #[error("git error: {0}")]
     Git(#[from] git2::Error),
     #[error("failed to clone git repository '{url}' into '{name}', output: {output:?}")]
