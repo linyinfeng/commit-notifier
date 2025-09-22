@@ -7,7 +7,7 @@ use url::Url;
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ChatRepoSettings {
     #[serde(default)]
-    pub pull_requests: BTreeMap<u64, PullRequestSettings>,
+    pub pr_issues: BTreeMap<u64, PRIssueSettings>,
     #[serde(default)]
     pub commits: BTreeMap<String, CommitSettings>,
     #[serde(default)]
@@ -22,7 +22,7 @@ pub struct CommitSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PullRequestSettings {
+pub struct PRIssueSettings {
     pub url: Url,
     #[serde(flatten)]
     pub notify: NotifySettings,

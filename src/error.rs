@@ -108,8 +108,8 @@ pub enum Error {
     MultipleReposHaveSameGitHubInfo(Vec<String>),
     #[error("no repository is associated with the github info: {0:?}")]
     NoRepoHaveGitHubInfo(GitHubInfo),
-    #[error("unsupported pr url: {0}")]
-    UnsupportedPrUrl(String),
+    #[error("unsupported PR/issue url: {0}")]
+    UnsupportedPRIssueUrl(String),
     #[error("not in an admin chat")]
     NotAdminChat,
 }

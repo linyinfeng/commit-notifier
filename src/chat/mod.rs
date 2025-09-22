@@ -9,9 +9,9 @@ use crate::{
         paths::ChatRepoPaths,
         resources::ChatRepoResources,
         results::{
-            BranchCheckResult, BranchResults, CommitCheckResult, CommitResults, PRCheckResult,
+            BranchCheckResult, BranchResults, CommitCheckResult, CommitResults, PRIssueCheckResult,
         },
-        settings::{BranchSettings, CommitSettings, NotifySettings, PullRequestSettings},
+        settings::{BranchSettings, CommitSettings, NotifySettings, PRIssueSettings},
     },
     condition::{Action, Condition},
     error::Error,
@@ -200,11 +200,11 @@ pub async fn commit_check(
     Ok(check_result)
 }
 
-pub async fn pr_add(
+pub async fn pr_issue_add(
     resources: &ChatRepoResources,
     repo_resources: &RepoResources,
-    pr_id: u64,
-    settings: PullRequestSettings,
+    id: u64,
+    settings: PRIssueSettings,
 ) -> Result<(), Error> {
     let github_info = {
         let locked = repo_resources.settings.read().await;
@@ -213,34 +213,35 @@ pub async fn pr_add(
             .clone()
             .ok_or(Error::NoGitHubInfo(resources.task.repo.clone()))?
     };
-    let _pr = github::get_pr(&github_info, pr_id).await?; // ensure the PR id is real
+    // every PR id is also an issue id
+    let _pr = github::get_issue(&github_info, id).await?; // ensure the PR/issue id is real
     {
         let mut locked = resources.settings.write().await;
-        if locked.pull_requests.contains_key(&pr_id) {
-            return Err(Error::PullRequestExists(pr_id));
+        if locked.pr_issues.contains_key(&id) {
+            return Err(Error::PullRequestExists(id));
         }
-        locked.pull_requests.insert(pr_id, settings);
+        locked.pr_issues.insert(id, settings);
     }
     resources.save_settings().await
 }
 
-pub async fn pr_remove(resources: &ChatRepoResources, id: u64) -> Result<(), Error> {
+pub async fn pr_issue_remove(resources: &ChatRepoResources, id: u64) -> Result<(), Error> {
     {
         let mut locked = resources.settings.write().await;
-        if !locked.pull_requests.contains_key(&id) {
+        if !locked.pr_issues.contains_key(&id) {
             return Err(Error::UnknownPullRequest(id));
         }
-        locked.pull_requests.remove(&id);
+        locked.pr_issues.remove(&id);
     }
     resources.save_settings().await
 }
 
-pub async fn pr_check(
+pub async fn pr_issue_check(
     resources: &ChatRepoResources,
     repo_resources: &RepoResources,
     id: u64,
-) -> Result<PRCheckResult, Error> {
-    log::info!("checking PR ({task}, {id})", task = resources.task);
+) -> Result<PRIssueCheckResult, Error> {
+    log::info!("checking PR/issue ({task}, {id})", task = resources.task);
     let github_info = {
         let locked = repo_resources.settings.read().await;
         locked
@@ -248,38 +249,39 @@ pub async fn pr_check(
             .clone()
             .ok_or(Error::NoGitHubInfo(resources.task.repo.clone()))?
     };
-    log::debug!("checking PR {github_info}#{id}");
-    if github::is_merged(&github_info, id).await? {
+    log::debug!("checking PR/issue {github_info}#{id}");
+    if github::is_closed(&github_info, id).await? {
+        {
+            let mut locked = resources.settings.write().await;
+            locked
+                .pr_issues
+                .remove(&id)
+                .ok_or(Error::UnknownPullRequest(id))?;
+        };
+        resources.save_settings().await?;
+        return Ok(PRIssueCheckResult::Closed);
+    }
+    let issue = github::get_issue(&github_info, id).await?;
+    if issue.pull_request.is_some() && github::is_merged(&github_info, id).await? {
         let settings = {
             let mut locked = resources.settings.write().await;
             locked
-                .pull_requests
+                .pr_issues
                 .remove(&id)
                 .ok_or(Error::UnknownPullRequest(id))?
         };
         resources.save_settings().await?;
         let commit = merged_pr_to_commit(resources, github_info, id, settings).await?;
-        Ok(PRCheckResult::Merged(commit))
-    } else if github::is_closed(&github_info, id).await? {
-        {
-            let mut locked = resources.settings.write().await;
-            locked
-                .pull_requests
-                .remove(&id)
-                .ok_or(Error::UnknownPullRequest(id))?;
-        };
-        resources.save_settings().await?;
-        Ok(PRCheckResult::Closed)
-    } else {
-        Ok(PRCheckResult::Waiting)
+        return Ok(PRIssueCheckResult::Merged(commit));
     }
+    Ok(PRIssueCheckResult::Waiting)
 }
 
 pub async fn merged_pr_to_commit(
     resources: &ChatRepoResources,
     github_info: GitHubInfo,
     pr_id: u64,
-    settings: PullRequestSettings,
+    settings: PRIssueSettings,
 ) -> Result<String, Error> {
     let pr = github::get_pr(&github_info, pr_id).await?;
     let commit = pr

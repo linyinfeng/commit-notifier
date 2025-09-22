@@ -43,7 +43,7 @@ pub struct BranchCheckResult {
 }
 
 #[derive(Debug)]
-pub enum PRCheckResult {
+pub enum PRIssueCheckResult {
     Merged(String),
     Closed,
     Waiting,

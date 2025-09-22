@@ -13,11 +13,14 @@ use crate::{
     chat::{
         self,
         resources::ChatRepoResources,
-        results::PRCheckResult,
-        settings::{BranchSettings, CommitSettings, PullRequestSettings},
+        results::PRIssueCheckResult,
+        settings::{BranchSettings, CommitSettings, PRIssueSettings},
     },
     condition::Action,
-    message::{branch_check_message, commit_check_message, pr_closed_message, pr_merged_message},
+    message::{
+        branch_check_message, commit_check_message, pr_issue_closed_message,
+        pr_issue_merged_message,
+    },
     options,
     repo::{self, resources::RepoResources},
     try_attach_subscribe_button_markup,
@@ -74,23 +77,23 @@ async fn update_chat_repo(bot: Bot, chat: ChatId, repo: &str) -> Result<(), Comm
     let repo_resources = repo::resources(repo).await?;
 
     // check pull requests before checking commits
-    let pull_requests = {
+    let pr_issues = {
         let settings = resources.settings.read().await;
-        settings.pull_requests.clone()
+        settings.pr_issues.clone()
     };
-    for (pr, settings) in pull_requests {
-        if let Err(e) = update_chat_repo_pr(
+    for (id, settings) in pr_issues {
+        if let Err(e) = update_chat_repo_pr_issue(
             bot.clone(),
             &resources,
             &repo_resources,
             chat,
             repo,
-            pr,
+            id,
             &settings,
         )
         .await
         {
-            log::error!("update error for PR ({chat}, {repo}, {pr}): {e}");
+            log::error!("update error for PR ({chat}, {repo}, {id}): {e}");
         }
     }
 
@@ -140,33 +143,33 @@ async fn update_chat_repo(bot: Bot, chat: ChatId, repo: &str) -> Result<(), Comm
     Ok(())
 }
 
-async fn update_chat_repo_pr(
+async fn update_chat_repo_pr_issue(
     bot: Bot,
     resources: &ChatRepoResources,
     repo_resources: &RepoResources,
     chat: ChatId,
     repo: &str,
-    pr: u64,
-    settings: &PullRequestSettings,
+    id: u64,
+    settings: &PRIssueSettings,
 ) -> Result<(), CommandError> {
-    let result = chat::pr_check(resources, repo_resources, pr).await?;
-    log::info!("finished pr check ({chat}, {repo}, {pr})");
+    let result = chat::pr_issue_check(resources, repo_resources, id).await?;
+    log::info!("finished PR/issue check ({chat}, {repo}, {id})");
     match result {
-        PRCheckResult::Merged(commit) => {
-            let message = pr_merged_message(repo, pr, settings, &commit);
+        PRIssueCheckResult::Merged(commit) => {
+            let message = pr_issue_merged_message(repo_resources, id, settings, &commit).await?;
             bot.send_message(chat, message)
                 .parse_mode(ParseMode::MarkdownV2)
                 .await?;
             Ok(())
         }
-        PRCheckResult::Closed => {
-            let message = pr_closed_message(repo, pr, settings);
+        PRIssueCheckResult::Closed => {
+            let message = pr_issue_closed_message(repo_resources, id, settings).await?;
             bot.send_message(chat, message)
                 .parse_mode(ParseMode::MarkdownV2)
                 .await?;
             Ok(())
         }
-        PRCheckResult::Waiting => Ok(()),
+        PRIssueCheckResult::Waiting => Ok(()),
     }
 }
 

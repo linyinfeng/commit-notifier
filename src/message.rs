@@ -5,9 +5,11 @@ use teloxide::{types::Message, utils::markdown};
 use crate::{
     chat::{
         results::{BranchCheckResult, CommitCheckResult},
-        settings::{BranchSettings, CommitSettings, PullRequestSettings, Subscriber},
+        settings::{BranchSettings, CommitSettings, PRIssueSettings, Subscriber},
     },
     condition::Action,
+    error::Error,
+    repo::{pr_issue_url, resources::RepoResources},
     utils::push_empty_line,
 };
 
@@ -79,25 +81,37 @@ pub fn commit_check_message_detail(
     )
 }
 
-pub fn pr_merged_message(
-    repo: &str,
-    pr: u64,
-    settings: &PullRequestSettings,
-    commit: &String,
-) -> String {
-    format!(
-        "{repo}/{pr}
-        merged as `{commit}`{notify}
-",
-        notify = push_empty_line(&settings.notify.notify_markdown()),
-    )
+pub async fn pr_issue_id_pretty(resources: &RepoResources, id: u64) -> Result<String, Error> {
+    let url = pr_issue_url(resources, id).await?;
+    Ok(markdown::link(
+        url.as_ref(),
+        &format!("{repo}/{id}", repo = resources.name),
+    ))
 }
 
-pub fn pr_closed_message(repo: &str, pr: u64, settings: &PullRequestSettings) -> String {
-    format!(
-        "{repo}/{pr} has been closed{notify}",
+pub async fn pr_issue_merged_message(
+    resources: &RepoResources,
+    id: u64,
+    settings: &PRIssueSettings,
+    commit: &String,
+) -> Result<String, Error> {
+    Ok(format!(
+        "{pretty_id} merged as `{commit}`{notify}",
+        pretty_id = pr_issue_id_pretty(resources, id).await?,
         notify = push_empty_line(&settings.notify.notify_markdown()),
-    )
+    ))
+}
+
+pub async fn pr_issue_closed_message(
+    resources: &RepoResources,
+    id: u64,
+    settings: &PRIssueSettings,
+) -> Result<String, Error> {
+    Ok(format!(
+        "{pretty_id} has been closed{notify}",
+        pretty_id = pr_issue_id_pretty(resources, id).await?,
+        notify = push_empty_line(&settings.notify.notify_markdown()),
+    ))
 }
 
 pub fn branch_check_message(

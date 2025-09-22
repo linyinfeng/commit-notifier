@@ -11,9 +11,11 @@ use tokio::{
     sync::Mutex,
     task,
 };
+use url::Url;
 
 use crate::{
     error::Error,
+    github,
     repo::{
         cache::batch_store_cache,
         paths::RepoPaths,
@@ -370,4 +372,12 @@ pub async fn condition_remove(resources: &RepoResources, identifier: &str) -> Re
         locked.conditions.remove(identifier);
     }
     resources.save_settings().await
+}
+
+pub async fn pr_issue_url(resources: &RepoResources, id: u64) -> Result<Url, Error> {
+    let locked = resources.settings.read().await;
+    match &locked.github_info {
+        Some(info) => Ok(github::get_issue(info, id).await?.html_url),
+        None => Err(Error::NoGitHubInfo(resources.name.clone())),
+    }
 }

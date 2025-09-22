@@ -40,18 +40,20 @@ use teloxide::utils::markdown;
 use tokio::time::sleep;
 use url::Url;
 
-use crate::chat::results::PRCheckResult;
+use crate::chat::results::PRIssueCheckResult;
 use crate::chat::settings::BranchSettings;
 use crate::chat::settings::CommitSettings;
 use crate::chat::settings::NotifySettings;
-use crate::chat::settings::PullRequestSettings;
+use crate::chat::settings::PRIssueSettings;
 use crate::chat::settings::Subscriber;
 use crate::condition::Action;
 use crate::condition::GeneralCondition;
 use crate::condition::in_branch::InBranchCondition;
 use crate::message::branch_check_message;
 use crate::message::commit_check_message;
+use crate::message::pr_issue_id_pretty;
 use crate::message::subscriber_from_msg;
+use crate::repo::pr_issue_url;
 use crate::repo::settings::ConditionSettings;
 use crate::update::update_and_report_error;
 use crate::utils::modify_subscriber_set;
@@ -144,16 +146,18 @@ async fn answer(bot: Bot, msg: Message, bc: BCommand) -> ResponseResult<()> {
                 } => commit_subscribe(bot, msg, repo, hash, unsubscribe).await,
                 command::Notifier::PrAdd {
                     repo_or_url,
-                    pr,
+                    id,
                     comment,
-                } => pr_add(bot, msg, repo_or_url, pr, comment).await,
-                command::Notifier::PrRemove { repo, pr } => pr_remove(bot, msg, repo, pr).await,
-                command::Notifier::PrCheck { repo, pr } => pr_check(bot, msg, repo, pr).await,
+                } => pr_issue_add(bot, msg, repo_or_url, id, comment).await,
+                command::Notifier::PrRemove { repo, id } => {
+                    pr_issue_remove(bot, msg, repo, id).await
+                }
+                command::Notifier::PrCheck { repo, id } => pr_issue_check(bot, msg, repo, id).await,
                 command::Notifier::PrSubscribe {
                     repo,
-                    pr,
+                    id,
                     unsubscribe,
-                } => pr_subscribe(bot, msg, repo, pr, unsubscribe).await,
+                } => pr_issue_subscribe(bot, msg, repo, id, unsubscribe).await,
                 command::Notifier::BranchAdd { repo, branch } => {
                     branch_add(bot, msg, repo, branch).await
                 }
@@ -260,7 +264,7 @@ async fn handle_callback_query_command_result(
             {
                 let mut settings = resources.settings.write().await;
                 let subscribers = &mut settings
-                    .pull_requests
+                    .pr_issues
                     .get_mut(&pr_id)
                     .ok_or_else(|| Error::UnknownPullRequest(pr_id))?
                     .notify
@@ -377,6 +381,7 @@ async fn list_for_admin(bot: Bot, msg: &Message) -> Result<(), CommandError> {
     }
     reply_to_msg(&bot, msg, result)
         .parse_mode(ParseMode::MarkdownV2)
+        .disable_link_preview(true)
         .await?;
 
     Ok(())
@@ -412,13 +417,13 @@ async fn list_for_normal(bot: Bot, msg: &Message) -> Result<(), CommandError> {
             ));
         }
         result.push_str("  *pull requests*:\n");
-        let pull_requests = &settings.pull_requests;
-        if pull_requests.is_empty() {
+        let pr_issues = &settings.pr_issues;
+        if pr_issues.is_empty() {
             result.push_str("  \\(nothing\\)\n");
         }
-        for (pr, settings) in pull_requests {
+        for (id, settings) in pr_issues {
             result.push_str(&format!(
-                "  \\- `{pr}`\n    {}\n",
+                "  \\- `{id}`\n    {}\n",
                 markdown::escape(settings.url.as_str())
             ));
         }
@@ -438,6 +443,7 @@ async fn list_for_normal(bot: Bot, msg: &Message) -> Result<(), CommandError> {
     }
     reply_to_msg(&bot, msg, result)
         .parse_mode(ParseMode::MarkdownV2)
+        .disable_link_preview(true)
         .await?;
 
     Ok(())
@@ -663,40 +669,32 @@ async fn commit_subscribe(
     Ok(())
 }
 
-async fn pr_add(
+async fn pr_issue_add(
     bot: Bot,
     msg: Message,
     repo_or_url: String,
-    pr_id: Option<u64>,
+    optional_id: Option<u64>,
     optional_comment: Option<String>,
 ) -> Result<(), CommandError> {
-    let (repo, pr_id) = resolve_pr_repo_or_url(repo_or_url, pr_id).await?;
+    let (repo, id) = resolve_pr_repo_or_url(repo_or_url, optional_id).await?;
     let resources = chat::resources_msg_repo(&msg, repo.clone()).await?;
     let repo_resources = repo::resources(&repo).await?;
-    let github_info = {
-        let settings = repo_resources.settings.read().await;
-        settings
-            .github_info
-            .clone()
-            .ok_or_else(|| Error::NoGitHubInfo(repo_resources.name.clone()))?
-    };
-    let url_str = format!("https://github.com/{github_info}/pull/{pr_id}");
-    let url = Url::parse(&url_str).map_err(Error::UrlParse)?;
+    let url = pr_issue_url(&repo_resources, id).await?;
     let subscribers = subscriber_from_msg(&msg).into_iter().collect();
     let comment = optional_comment.unwrap_or_default();
-    let settings = PullRequestSettings {
+    let settings = PRIssueSettings {
         url,
         notify: NotifySettings {
             comment,
             subscribers,
         },
     };
-    match chat::pr_add(&resources, &repo_resources, pr_id, settings).await {
+    match chat::pr_issue_add(&resources, &repo_resources, id, settings).await {
         Ok(()) => {
-            pr_check(bot, msg, repo, pr_id).await?;
+            pr_issue_check(bot, msg, repo, id).await?;
         }
         Err(Error::PullRequestExists(_)) => {
-            pr_subscribe(bot.clone(), msg.clone(), repo.clone(), pr_id, false).await?;
+            pr_issue_subscribe(bot.clone(), msg.clone(), repo.clone(), id, false).await?;
         }
         Err(e) => return Err(e.into()),
     };
@@ -707,8 +705,9 @@ async fn resolve_pr_repo_or_url(
     repo_or_url: String,
     pr_id: Option<u64>,
 ) -> Result<(String, u64), Error> {
-    static GITHUB_URL_REGEX: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"https://github\.com/([^/]+)/([^/]+)/pull/(\d+)"#).unwrap());
+    static GITHUB_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"https://github\.com/([^/]+)/([^/]+)/(pull|issues)/(\d+)"#).unwrap()
+    });
     match pr_id {
         Some(id) => Ok((repo_or_url, id)),
         None => {
@@ -716,7 +715,8 @@ async fn resolve_pr_repo_or_url(
                 let owner = &captures[1];
                 let repo = &captures[2];
                 let github_info = GitHubInfo::new(owner.to_string(), repo.to_string());
-                let pr: u64 = captures[3].parse().map_err(Error::ParseInt)?;
+                log::trace!("PR/issue id to parse: {}", &captures[4]);
+                let id: u64 = captures[4].parse().map_err(Error::ParseInt)?;
                 let repos = repo::list().await?;
                 let mut repos_found = Vec::new();
                 for repo in repos {
@@ -732,69 +732,82 @@ async fn resolve_pr_repo_or_url(
                     return Err(Error::MultipleReposHaveSameGitHubInfo(repos_found));
                 } else {
                     let repo = repos_found.pop().unwrap();
-                    return Ok((repo, pr));
+                    return Ok((repo, id));
                 }
             }
-            Err(Error::UnsupportedPrUrl(repo_or_url))
+            Err(Error::UnsupportedPRIssueUrl(repo_or_url))
         }
     }
 }
 
-async fn pr_check(bot: Bot, msg: Message, repo: String, pr_id: u64) -> Result<(), CommandError> {
+async fn pr_issue_check(bot: Bot, msg: Message, repo: String, id: u64) -> Result<(), CommandError> {
     let resources = chat::resources_msg_repo(&msg, repo.clone()).await?;
     let repo_resources = repo::resources(&repo).await?;
-    match chat::pr_check(&resources, &repo_resources, pr_id).await {
-        Ok(result) => match result {
-            PRCheckResult::Merged(commit) => {
-                reply_to_msg(
-                    &bot,
-                    &msg,
-                    format!(
-                        "pr {pr_id} has been merged \\(and removed\\)\ncommit `{commit}` added"
-                    ),
-                )
-                .parse_mode(ParseMode::MarkdownV2)
-                .await?;
-                commit_check(bot, msg, repo, commit).await
+    match chat::pr_issue_check(&resources, &repo_resources, id).await {
+        Ok(result) => {
+            let pretty_id = pr_issue_id_pretty(&repo_resources, id).await?;
+            match result {
+                PRIssueCheckResult::Merged(commit) => {
+                    reply_to_msg(
+                        &bot,
+                        &msg,
+                        format!(
+                            "{pretty_id} has been merged \\(and removed\\)\ncommit `{commit}` added"
+                        ),
+                    )
+                    .parse_mode(ParseMode::MarkdownV2)
+                    .await?;
+                    commit_check(bot, msg, repo, commit).await
+                }
+                PRIssueCheckResult::Closed => {
+                    reply_to_msg(
+                        &bot,
+                        &msg,
+                        format!("{pretty_id} has been closed \\(and removed\\)"),
+                    )
+                    .parse_mode(ParseMode::MarkdownV2)
+                    .await?;
+                    Ok(())
+                }
+                PRIssueCheckResult::Waiting => {
+                    let mut send = reply_to_msg(
+                        &bot,
+                        &msg,
+                        format!("{pretty_id} has not been merged/closed yet"),
+                    )
+                    .parse_mode(ParseMode::MarkdownV2);
+                    send = try_attach_subscribe_button_markup(
+                        msg.chat.id,
+                        send,
+                        "p",
+                        &repo,
+                        &id.to_string(),
+                    );
+                    send.await?;
+                    Ok(())
+                }
             }
-            PRCheckResult::Closed => {
-                reply_to_msg(
-                    &bot,
-                    &msg,
-                    format!("pr {pr_id} has been closed \\(and removed\\)"),
-                )
-                .parse_mode(ParseMode::MarkdownV2)
-                .await?;
-                Ok(())
-            }
-            PRCheckResult::Waiting => {
-                let mut send =
-                    reply_to_msg(&bot, &msg, format!("pr {pr_id} has not been merged yet"))
-                        .parse_mode(ParseMode::MarkdownV2);
-                send = try_attach_subscribe_button_markup(
-                    msg.chat.id,
-                    send,
-                    "p",
-                    &repo,
-                    &pr_id.to_string(),
-                );
-                send.await?;
-                Ok(())
-            }
-        },
+        }
         Err(Error::CommitExists(commit)) => commit_subscribe(bot, msg, repo, commit, false).await,
         Err(e) => Err(e.into()),
     }
 }
 
-async fn pr_remove(bot: Bot, msg: Message, repo: String, pr_id: u64) -> Result<(), CommandError> {
-    let resources = chat::resources_msg_repo(&msg, repo).await?;
-    chat::pr_remove(&resources, pr_id).await?;
-    reply_to_msg(&bot, &msg, format!("pr {pr_id} removed")).await?;
+async fn pr_issue_remove(
+    bot: Bot,
+    msg: Message,
+    repo: String,
+    id: u64,
+) -> Result<(), CommandError> {
+    let resources = chat::resources_msg_repo(&msg, repo.clone()).await?;
+    let repo_resources = repo::resources(&repo).await?;
+    chat::pr_issue_remove(&resources, id).await?;
+    let pretty_id = pr_issue_id_pretty(&repo_resources, id).await?;
+    reply_to_msg(&bot, &msg, format!("{pretty_id} removed")).await?;
     Ok(())
 }
 
-async fn pr_subscribe(
+async fn pr_issue_subscribe(
     bot: Bot,
     msg: Message,
     repo: String,
@@ -806,7 +819,7 @@ async fn pr_subscribe(
     {
         let mut settings = resources.settings.write().await;
         let subscribers = &mut settings
-            .pull_requests
+            .pr_issues
             .get_mut(&pr_id)
             .ok_or_else(|| Error::UnknownPullRequest(pr_id))?
             .notify

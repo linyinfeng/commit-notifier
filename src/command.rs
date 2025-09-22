@@ -41,28 +41,28 @@ pub enum Notifier {
     CommitRemove { repo: String, hash: String },
     #[command(about = "fire a commit check immediately")]
     CommitCheck { repo: String, hash: String },
-    #[command(about = "subscribe a commit")]
+    #[command(about = "subscribe to a commit")]
     CommitSubscribe {
         repo: String,
         hash: String,
         #[arg(short, long)]
         unsubscribe: bool,
     },
-    #[command(about = "add a pull request")]
+    #[command(alias("issue-add"), about = "add a pull request/issue")]
     PrAdd {
         repo_or_url: String,
-        pr: Option<u64>,
+        id: Option<u64>,
         #[arg(long, short)]
         comment: Option<String>,
     },
-    #[command(about = "remove a pull request")]
-    PrRemove { repo: String, pr: u64 },
-    #[command(about = "check a pull request")]
-    PrCheck { repo: String, pr: u64 },
-    #[command(about = "subscribe a pull request")]
+    #[command(alias("issue-remove"), about = "remove a pull request/issue")]
+    PrRemove { repo: String, id: u64 },
+    #[command(alias("issue-check"), about = "check a pull request/issue")]
+    PrCheck { repo: String, id: u64 },
+    #[command(alias("issue-subscribe"), about = "subscribe to a pull request/issue")]
     PrSubscribe {
         repo: String,
-        pr: u64,
+        id: u64,
         #[arg(short, long)]
         unsubscribe: bool,
     },
@@ -72,7 +72,7 @@ pub enum Notifier {
     BranchRemove { repo: String, branch: String },
     #[command(about = "fire a branch check immediately")]
     BranchCheck { repo: String, branch: String },
-    #[command(about = "subscribe a branch")]
+    #[command(about = "subscribe to a branch")]
     BranchSubscribe {
         repo: String,
         branch: String,
