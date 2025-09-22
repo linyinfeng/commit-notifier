@@ -313,7 +313,7 @@ pub async fn watching_branches(
     let remote_branches = repo.branches(Some(git2::BranchType::Remote))?;
     let branch_regex = {
         let settings = resources.settings.read().await;
-        Regex::new(&format!("^{}$", settings.branch_regex))?
+        settings.branch_regex.clone()
     };
     let mut matched_branches = BTreeSet::new();
     for branch_iter_res in remote_branches {
