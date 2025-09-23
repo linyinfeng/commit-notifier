@@ -220,10 +220,7 @@ async fn answer(bot: Bot, msg: Message, bc: BCommand) -> ResponseResult<()> {
                 command::Notifier::List => list(bot, msg).await,
             }
         }
-        Err(Error::Clap(e))
-            if e.kind() == clap::error::ErrorKind::DisplayHelp
-                || e.kind() == clap::error::ErrorKind::DisplayHelp =>
-        {
+        Err(Error::Clap(e)) => {
             let help_text = e.render().to_string();
             reply_to_msg(
                 &bot,
