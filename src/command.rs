@@ -5,13 +5,26 @@ use clap::ColorChoice;
 use clap::Parser;
 use std::{ffi::OsString, iter};
 
+const HELP_TEMPLATE: &str = "\
+{before-help}{name} {version}
+{author-with-newline}{about}
+{usage-heading} {usage}
+
+{all-args}{after-help}
+";
+
 #[derive(Debug, Parser)]
-#[command(name = "/notifier",
-            author,
-            version,
-            about,
-            color = ColorChoice::Never,
-            no_binary_name = true,
+#[command(
+    name = "/notifier",
+    author,
+    version,
+    about,
+    color = ColorChoice::Never,
+    no_binary_name = true,
+    propagate_version = true,
+    infer_long_args = true,
+    infer_subcommands = true,
+    help_template = HELP_TEMPLATE
 )]
 pub enum Notifier {
     #[command(about = "return current chat id")]
