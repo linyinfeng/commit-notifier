@@ -18,13 +18,14 @@ pub fn commit_check_message(
     commit: &str,
     settings: &CommitSettings,
     result: &CommitCheckResult,
+    mention: bool,
 ) -> String {
     format!(
         "{summary}
 {details}",
         summary = commit_check_message_summary(repo, settings, result),
         details = markdown::expandable_blockquote(&commit_check_message_additional(
-            commit, settings, result
+            commit, settings, result, mention
         )),
     )
 }
@@ -50,6 +51,7 @@ pub fn commit_check_message_additional(
     commit: &str,
     settings: &CommitSettings,
     result: &CommitCheckResult,
+    mention: bool,
 ) -> String {
     let remove_conditions: BTreeSet<&String> = result.conditions_of_action(Action::Remove);
     let auto_remove_msg = if remove_conditions.is_empty() {
@@ -69,7 +71,11 @@ pub fn commit_check_message_additional(
 {auto_remove_msg}
 ",
         commit = markdown::escape(commit),
-        notify = empty_or_start_new_line(&settings.notify.subscribers_markdown()),
+        notify = if mention {
+            empty_or_start_new_line(&settings.notify.subscribers_markdown())
+        } else {
+            "".to_string()
+        },
         all = markdown_list(result.all.iter())
     )
 }

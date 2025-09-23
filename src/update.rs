@@ -190,7 +190,8 @@ async fn update_chat_repo_commit(
         if !suppress_notification_conditions.is_empty() {
             log::info!("suppress notification for check result of ({chat}, {repo}): {result:?}",);
         } else {
-            let message = commit_check_message(repo, commit, settings, &result);
+            // mention in update
+            let message = commit_check_message(repo, commit, settings, &result, true);
             let mut send = bot
                 .send_message(chat, message)
                 .parse_mode(ParseMode::MarkdownV2)

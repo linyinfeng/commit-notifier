@@ -754,7 +754,8 @@ async fn commit_check(
             .clone()
     };
     let result = chat::commit_check(&resources, &repo_resources, &hash).await?;
-    let reply = commit_check_message(&repo, &hash, &commit_settings, &result);
+    // do not mention in manual check
+    let reply = commit_check_message(&repo, &hash, &commit_settings, &result, false);
     let mut send = reply_to_msg(&bot, &msg, reply)
         .parse_mode(ParseMode::MarkdownV2)
         .disable_link_preview(true);
