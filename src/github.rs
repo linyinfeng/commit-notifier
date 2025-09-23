@@ -1,6 +1,6 @@
 use std::fmt::{self, Display};
 
-use octocrab::models::pulls::PullRequest;
+use octocrab::models::{issues::Issue, pulls::PullRequest};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -10,8 +10,8 @@ use crate::error::Error;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GitHubInfo {
-    owner: String,
-    repo: String,
+    pub owner: String,
+    pub repo: String,
 }
 
 impl Display for GitHubInfo {
@@ -77,10 +77,18 @@ pub async fn is_merged(info: &GitHubInfo, pr_id: u64) -> Result<bool, Error> {
         .map_err(Box::new)?)
 }
 
-pub async fn get_pr(info: &GitHubInfo, pr_id: u64) -> Result<PullRequest, Error> {
+pub async fn get_issue(info: &GitHubInfo, id: u64) -> Result<Issue, Error> {
+    Ok(octocrab::instance()
+        .issues(&info.owner, &info.repo)
+        .get(id)
+        .await
+        .map_err(Box::new)?)
+}
+
+pub async fn get_pr(info: &GitHubInfo, id: u64) -> Result<PullRequest, Error> {
     Ok(octocrab::instance()
         .pulls(&info.owner, &info.repo)
-        .get(pr_id)
+        .get(id)
         .await
         .map_err(Box::new)?)
 }

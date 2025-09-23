@@ -1,102 +1,35 @@
-use regex::Regex;
-use std::collections::BTreeSet;
-use std::path::PathBuf;
-use teloxide::types::ChatId;
+use std::{path::PathBuf, sync::LazyLock};
 
-use crate::error::Error;
-use crate::options;
-use std::fs;
+use regex::Regex;
+
+use crate::{error::Error, options};
 
 #[derive(Debug, Clone)]
-pub struct Paths {
+pub struct RepoPaths {
     pub outer: PathBuf,
     pub repo: PathBuf,
-    pub cache: PathBuf,
     pub settings: PathBuf,
-    pub results: PathBuf,
+    pub cache: PathBuf,
 }
+
+pub static GLOBAL_REPO_OUTER: LazyLock<PathBuf> =
+    LazyLock::new(|| options::get().working_dir.join("repositories"));
 
 static NAME_RE: once_cell::sync::Lazy<Regex> =
     once_cell::sync::Lazy::new(|| Regex::new("^[a-zA-Z0-9_\\-]*$").unwrap());
 
-pub fn get(chat_id: ChatId, repo: &str) -> Result<Paths, Error> {
-    if !NAME_RE.is_match(repo) {
-        return Err(Error::Name(repo.to_owned()));
-    }
-
-    let chat_working_dir = chat_dir(chat_id);
-    if !chat_working_dir.is_dir() {
-        return Err(Error::NotInAllowList(chat_id));
-    }
-
-    let outer_dir = chat_working_dir.join(repo);
-    Ok(Paths {
-        outer: outer_dir.clone(),
-        repo: outer_dir.join("repo"),
-        cache: outer_dir.join("cache.sqlite"),
-        settings: outer_dir.join("settings.json"),
-        results: outer_dir.join("results.json"),
-    })
-}
-
-fn chat_dir(chat: ChatId) -> PathBuf {
-    let ChatId(num) = chat;
-    let working_dir = &options::get().working_dir;
-    let chat_dir_name = if num < 0 {
-        format!("_{}", num.unsigned_abs())
-    } else {
-        format!("{chat}")
-    };
-    working_dir.join(chat_dir_name)
-}
-
-pub fn chats() -> Result<BTreeSet<ChatId>, Error> {
-    let mut chats = BTreeSet::new();
-    let working_dir = &options::get().working_dir;
-    let dirs = fs::read_dir(working_dir)?;
-    for dir_res in dirs {
-        let dir = dir_res?;
-        let name_os = dir.file_name();
-        let name = name_os.into_string().map_err(Error::InvalidOsString)?;
-
-        let invalid_error = Err(Error::InvalidChatDir(name.clone()));
-        if name.is_empty() {
-            return invalid_error;
+impl RepoPaths {
+    pub fn new(name: &str) -> Result<RepoPaths, Error> {
+        if !NAME_RE.is_match(name) {
+            return Err(Error::Name(name.to_string()));
         }
 
-        let name_vec: Vec<_> = name.chars().collect();
-        let (sign, num_str) = if name_vec[0] == '_' {
-            (-1, &name_vec[1..])
-        } else {
-            (1, &name_vec[..])
-        };
-        let n: i64 = match num_str.iter().collect::<String>().parse() {
-            Ok(n) => n,
-            Err(e) => {
-                log::warn!("invalid chat directory '{name}': {e}, ignoring");
-                continue;
-            }
-        };
-        chats.insert(ChatId(sign * n));
+        let outer = GLOBAL_REPO_OUTER.join(name);
+        Ok(Self {
+            outer: outer.clone(),
+            repo: outer.join("repo"),
+            settings: outer.join("settings.json"),
+            cache: outer.join("cache.sqlite"),
+        })
     }
-    Ok(chats)
-}
-
-pub fn repos(chat: ChatId) -> Result<BTreeSet<String>, Error> {
-    let mut repos = BTreeSet::new();
-
-    let chat_working_dir = chat_dir(chat);
-    if !chat_working_dir.is_dir() {
-        return Err(Error::NotInAllowList(chat));
-    }
-
-    let dirs = fs::read_dir(chat_working_dir)?;
-    for dir_res in dirs {
-        let dir = dir_res?;
-        let name_os = dir.file_name();
-        let name = name_os.into_string().map_err(Error::InvalidOsString)?;
-        repos.insert(name);
-    }
-
-    Ok(repos)
 }

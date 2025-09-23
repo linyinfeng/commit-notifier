@@ -5,15 +5,30 @@ use clap::ColorChoice;
 use clap::Parser;
 use std::{ffi::OsString, iter};
 
+const HELP_TEMPLATE: &str = "\
+{before-help}{name} {version}
+{author-with-newline}{about}
+{usage-heading} {usage}
+
+{all-args}{after-help}
+";
+
 #[derive(Debug, Parser)]
-#[command(name = "/notifier",
-            author,
-            version,
-            about,
-            color = ColorChoice::Never,
-            no_binary_name = true,
+#[command(
+    name = "/notifier",
+    author,
+    version,
+    about,
+    color = ColorChoice::Never,
+    no_binary_name = true,
+    propagate_version = true,
+    infer_long_args = true,
+    infer_subcommands = true,
+    help_template = HELP_TEMPLATE
 )]
 pub enum Notifier {
+    #[command(about = "return current chat id")]
+    ChatId,
     #[command(about = "add a repository")]
     RepoAdd { name: String, url: String },
     #[command(about = "edit settings of a repository")]
@@ -39,28 +54,37 @@ pub enum Notifier {
     CommitRemove { repo: String, hash: String },
     #[command(about = "fire a commit check immediately")]
     CommitCheck { repo: String, hash: String },
-    #[command(about = "subscribe a commit")]
+    #[command(about = "subscribe to a commit")]
     CommitSubscribe {
         repo: String,
         hash: String,
         #[arg(short, long)]
         unsubscribe: bool,
     },
-    #[command(about = "add a pull request")]
+    #[command(visible_alias("issue-add"), about = "add a pull request/issue")]
     PrAdd {
         repo_or_url: String,
-        pr: Option<u64>,
+        id: Option<u64>,
         #[arg(long, short)]
         comment: Option<String>,
     },
-    #[command(about = "remove a pull request")]
-    PrRemove { repo: String, pr: u64 },
-    #[command(about = "check a pull request")]
-    PrCheck { repo: String, pr: u64 },
-    #[command(about = "subscribe a pull request")]
+    #[command(visible_alias("issue-remove"), about = "remove a pull request/issue")]
+    PrRemove {
+        repo_or_url: String,
+        id: Option<u64>,
+    },
+    #[command(visible_alias("issue-check"), about = "check a pull request/issue")]
+    PrCheck {
+        repo_or_url: String,
+        id: Option<u64>,
+    },
+    #[command(
+        visible_alias("issue-subscribe"),
+        about = "subscribe to a pull request/issue"
+    )]
     PrSubscribe {
-        repo: String,
-        pr: u64,
+        repo_or_url: String,
+        id: Option<u64>,
         #[arg(short, long)]
         unsubscribe: bool,
     },
@@ -70,7 +94,7 @@ pub enum Notifier {
     BranchRemove { repo: String, branch: String },
     #[command(about = "fire a branch check immediately")]
     BranchCheck { repo: String, branch: String },
-    #[command(about = "subscribe a branch")]
+    #[command(about = "subscribe to a branch")]
     BranchSubscribe {
         repo: String,
         branch: String,
@@ -88,8 +112,6 @@ pub enum Notifier {
     },
     #[command(about = "remove an auto clean condition")]
     ConditionRemove { repo: String, identifier: String },
-    #[command(about = "manually trigger an auto clean condition check")]
-    ConditionTrigger { repo: String, identifier: String },
     #[command(about = "list repositories and commits")]
     List,
 }
