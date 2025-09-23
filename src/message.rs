@@ -34,10 +34,14 @@ pub fn commit_check_message_summary(
     settings: &CommitSettings,
     result: &CommitCheckResult,
 ) -> String {
+    let escaped_comment = markdown::escape(&settings.notify.comment);
+    let comment_link = match &settings.url {
+        Some(url) => markdown::link(url.as_ref(), &escaped_comment),
+        None => escaped_comment,
+    };
     format!(
-        "\\[{repo}\\] {comment} \\+{new}",
+        "\\[{repo}\\] {comment_link} \\+{new}",
         repo = markdown::escape(repo),
-        comment = markdown::escape(&settings.notify.comment),
         new = markdown_list_compat(result.new.iter()),
     )
 }

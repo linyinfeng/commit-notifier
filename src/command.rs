@@ -48,21 +48,30 @@ pub enum Notifier {
         #[arg(short, long)]
         unsubscribe: bool,
     },
-    #[command(alias("issue-add"), about = "add a pull request/issue")]
+    #[command(visible_alias("issue-add"), about = "add a pull request/issue")]
     PrAdd {
         repo_or_url: String,
         id: Option<u64>,
         #[arg(long, short)]
         comment: Option<String>,
     },
-    #[command(alias("issue-remove"), about = "remove a pull request/issue")]
-    PrRemove { repo: String, id: u64 },
-    #[command(alias("issue-check"), about = "check a pull request/issue")]
-    PrCheck { repo: String, id: u64 },
-    #[command(alias("issue-subscribe"), about = "subscribe to a pull request/issue")]
+    #[command(visible_alias("issue-remove"), about = "remove a pull request/issue")]
+    PrRemove {
+        repo_or_url: String,
+        id: Option<u64>,
+    },
+    #[command(visible_alias("issue-check"), about = "check a pull request/issue")]
+    PrCheck {
+        repo_or_url: String,
+        id: Option<u64>,
+    },
+    #[command(
+        visible_alias("issue-subscribe"),
+        about = "subscribe to a pull request/issue"
+    )]
     PrSubscribe {
-        repo: String,
-        id: u64,
+        repo_or_url: String,
+        id: Option<u64>,
         #[arg(short, long)]
         unsubscribe: bool,
     },

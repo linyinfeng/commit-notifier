@@ -3,8 +3,10 @@ use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
+use std::sync::LazyLock;
 
 use fs4::fs_std::FileExt;
+use regex::Regex;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use teloxide::types::ReplyParameters;
@@ -12,6 +14,39 @@ use teloxide::{payloads::SendMessage, prelude::*, requests::JsonRequest};
 
 use crate::chat::settings::Subscriber;
 use crate::error::Error;
+use crate::github::GitHubInfo;
+use crate::{CommandError, repo};
+
+pub async fn report_error<T>(
+    bot: &Bot,
+    msg: &Message,
+    result: Result<T, Error>,
+) -> Result<Option<T>, teloxide::RequestError> {
+    match result {
+        Ok(r) => Ok(Some(r)),
+        Err(e) => {
+            // report normal errors to user
+            e.report(bot, msg).await?;
+            Ok(None)
+        }
+    }
+}
+
+pub async fn report_command_error<T>(
+    bot: &Bot,
+    msg: &Message,
+    result: Result<T, CommandError>,
+) -> Result<Option<T>, teloxide::RequestError> {
+    match result {
+        Ok(r) => Ok(Some(r)),
+        Err(CommandError::Normal(e)) => {
+            // report normal errors to user
+            e.report(bot, msg).await?;
+            Ok(None)
+        }
+        Err(CommandError::Teloxide(e)) => Err(e),
+    }
+}
 
 pub fn reply_to_msg<T>(bot: &Bot, msg: &Message, text: T) -> JsonRequest<SendMessage>
 where
@@ -82,4 +117,43 @@ pub fn modify_subscriber_set(
         set.insert(subscriber);
     }
     Ok(())
+}
+
+pub async fn resolve_repo_or_url_and_id(
+    repo_or_url: String,
+    pr_id: Option<u64>,
+) -> Result<(String, u64), Error> {
+    static GITHUB_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"https://github\.com/([^/]+)/([^/]+)/(pull|issues)/(\d+)"#).unwrap()
+    });
+    match pr_id {
+        Some(id) => Ok((repo_or_url, id)),
+        None => {
+            if let Some(captures) = GITHUB_URL_REGEX.captures(&repo_or_url) {
+                let owner = &captures[1];
+                let repo = &captures[2];
+                let github_info = GitHubInfo::new(owner.to_string(), repo.to_string());
+                log::trace!("PR/issue id to parse: {}", &captures[4]);
+                let id: u64 = captures[4].parse().map_err(Error::ParseInt)?;
+                let repos = repo::list().await?;
+                let mut repos_found = Vec::new();
+                for repo in repos {
+                    let resources = repo::resources(&repo).await?;
+                    let repo_github_info = &resources.settings.read().await.github_info;
+                    if repo_github_info.as_ref() == Some(&github_info) {
+                        repos_found.push(repo);
+                    }
+                }
+                if repos_found.is_empty() {
+                    return Err(Error::NoRepoHaveGitHubInfo(github_info));
+                } else if repos_found.len() != 1 {
+                    return Err(Error::MultipleReposHaveSameGitHubInfo(repos_found));
+                } else {
+                    let repo = repos_found.pop().unwrap();
+                    return Ok((repo, id));
+                }
+            }
+            Err(Error::UnsupportedPRIssueUrl(repo_or_url))
+        }
+    }
 }
