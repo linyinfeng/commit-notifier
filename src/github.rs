@@ -1,6 +1,6 @@
 use std::fmt::{self, Display};
 
-use octocrab::models::{IssueState, issues::Issue, pulls::PullRequest};
+use octocrab::models::{issues::Issue, pulls::PullRequest};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -75,10 +75,6 @@ pub async fn is_merged(info: &GitHubInfo, pr_id: u64) -> Result<bool, Error> {
         .is_merged(pr_id)
         .await
         .map_err(Box::new)?)
-}
-
-pub async fn is_closed(info: &GitHubInfo, pr_id: u64) -> Result<bool, Error> {
-    Ok(get_issue(info, pr_id).await?.state == IssueState::Closed)
 }
 
 pub async fn get_issue(info: &GitHubInfo, id: u64) -> Result<Issue, Error> {

@@ -1,6 +1,7 @@
 use std::{collections::BTreeSet, fmt, sync::Arc};
 
 use git2::BranchType;
+use octocrab::models::IssueState;
 use teloxide::types::{ChatId, Message};
 use tokio::{fs::read_dir, sync::Mutex};
 
@@ -250,17 +251,6 @@ pub async fn pr_issue_check(
             .ok_or(Error::NoGitHubInfo(resources.task.repo.clone()))?
     };
     log::debug!("checking PR/issue {github_info}#{id}");
-    if github::is_closed(&github_info, id).await? {
-        {
-            let mut locked = resources.settings.write().await;
-            locked
-                .pr_issues
-                .remove(&id)
-                .ok_or(Error::UnknownPRIssue(id))?;
-        };
-        resources.save_settings().await?;
-        return Ok(PRIssueCheckResult::Closed);
-    }
     let issue = github::get_issue(&github_info, id).await?;
     if issue.pull_request.is_some() && github::is_merged(&github_info, id).await? {
         let settings = {
@@ -273,6 +263,17 @@ pub async fn pr_issue_check(
         resources.save_settings().await?;
         let commit = merged_pr_to_commit(resources, github_info, id, settings).await?;
         return Ok(PRIssueCheckResult::Merged(commit));
+    }
+    if issue.state == IssueState::Closed {
+        {
+            let mut locked = resources.settings.write().await;
+            locked
+                .pr_issues
+                .remove(&id)
+                .ok_or(Error::UnknownPRIssue(id))?;
+        };
+        resources.save_settings().await?;
+        return Ok(PRIssueCheckResult::Closed);
     }
     Ok(PRIssueCheckResult::Waiting)
 }
