@@ -34,6 +34,7 @@ use teloxide::types::InlineKeyboardButton;
 use teloxide::types::InlineKeyboardButtonKind;
 use teloxide::types::InlineKeyboardMarkup;
 use teloxide::types::ParseMode;
+use teloxide::types::User;
 use teloxide::update_listeners;
 use teloxide::utils::command::BotCommands;
 use teloxide::utils::markdown;
@@ -325,8 +326,8 @@ async fn handle_callback_query_command_result(
     query: &CallbackQuery,
 ) -> Result<String, CommandError> {
     log::debug!("query = {query:?}");
-    let (chat_id, username) = get_chat_id_and_username_from_query(query)?;
-    let subscriber = Subscriber::Telegram { username };
+    let (chat_id, user) = get_chat_id_and_user_from_query(query)?;
+    let subscriber = Subscriber::from_tg_user(&user);
     let _msg = query
         .message
         .as_ref()
@@ -388,15 +389,10 @@ async fn handle_callback_query_command_result(
     }
 }
 
-fn get_chat_id_and_username_from_query(query: &CallbackQuery) -> Result<(ChatId, String), Error> {
+fn get_chat_id_and_user_from_query(query: &CallbackQuery) -> Result<(ChatId, User), Error> {
     let chat_id = query.chat_id().ok_or(Error::SubscribeCallbackNoChatId)?;
-    let username = query
-        .from
-        .username
-        .as_ref()
-        .ok_or(Error::SubscribeCallbackNoUsername)?
-        .clone();
-    Ok((chat_id, username))
+    let user = query.from.clone();
+    Ok((chat_id, user))
 }
 
 enum CommandError {

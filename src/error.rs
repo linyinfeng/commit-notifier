@@ -5,6 +5,7 @@ use teloxide::types::ReplyParameters;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
+use crate::chat::settings::SubscriberCompat;
 use crate::github::GitHubInfo;
 
 #[derive(Error, Debug)]
@@ -104,8 +105,6 @@ pub enum Error {
     SubscribeCallbackNoChatId,
     #[error("can not determine message id from subscribe callback query")]
     SubscribeCallbackNoMsgId,
-    #[error("can not determine username from subscribe callback query")]
-    SubscribeCallbackNoUsername,
     #[error("can not get data from subscribe callback query")]
     SubscribeCallbackNoData,
     #[error("invalid kind '{0}' in subscribe callback data")]
@@ -118,6 +117,8 @@ pub enum Error {
     UnsupportedPRIssueUrl(String),
     #[error("not in an admin chat")]
     NotAdminChat,
+    #[error("invalid subscriber: {0:?}")]
+    InvalidSubscriber(SubscriberCompat),
 }
 
 impl Error {

@@ -190,10 +190,5 @@ where
 }
 
 pub fn subscriber_from_msg(msg: &Message) -> Option<Subscriber> {
-    match &msg.from {
-        None => None,
-        Some(u) => u.username.as_ref().map(|name| Subscriber::Telegram {
-            username: name.to_string(),
-        }),
-    }
+    msg.from.as_ref().map(Subscriber::from_tg_user)
 }

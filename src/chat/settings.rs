@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
-use teloxide::utils::markdown;
+use teloxide::{types::User, utils::markdown};
 use url::Url;
+
+use crate::error::Error;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ChatRepoSettings {
@@ -73,14 +75,50 @@ impl NotifySettings {
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "SubscriberCompat")]
 pub enum Subscriber {
-    Telegram { username: String },
+    Telegram { markdown_mention: String },
+}
+
+impl TryFrom<SubscriberCompat> for Subscriber {
+    type Error = Error;
+
+    fn try_from(compat: SubscriberCompat) -> Result<Self, Self::Error> {
+        match &compat {
+            SubscriberCompat::Telegram {
+                markdown_mention,
+                username,
+            } => match (markdown_mention, username) {
+                (Some(mention), _) => Ok(Subscriber::Telegram {
+                    markdown_mention: mention.clone(),
+                }),
+                (_, Some(username)) => Ok(Subscriber::Telegram {
+                    markdown_mention: format!("@{username}"),
+                }),
+                (_, _) => Err(Error::InvalidSubscriber(compat)),
+            },
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Deserialize)]
+pub enum SubscriberCompat {
+    Telegram {
+        markdown_mention: Option<String>,
+        username: Option<String>, // field for compatibility
+    },
 }
 
 impl Subscriber {
-    fn markdown(&self) -> String {
+    pub fn from_tg_user(u: &User) -> Self {
+        Self::Telegram {
+            markdown_mention: markdown::user_mention_or_link(u),
+        }
+    }
+
+    pub fn markdown(&self) -> &str {
         match self {
-            Subscriber::Telegram { username } => format!("@{}", markdown::escape(username)),
+            Subscriber::Telegram { markdown_mention } => markdown_mention,
         }
     }
 }
