@@ -1,10 +1,10 @@
 [package]
 name = "commit-notifier"
 authors = [ "Lin Yinfeng <lin.yinfeng@outlook.com>" ]
-version = "0.1.3"
+version = "0.2.0"
 edition = "2024"
 description = """
-A simple bot tracking commits in branches
+A simple bot tracking git commits/PRs/issues/branches
 """
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
