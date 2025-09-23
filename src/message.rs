@@ -23,8 +23,8 @@ pub fn commit_check_message(
         "{summary}
 {details}",
         summary = commit_check_message_summary(repo, settings, result),
-        details = markdown::expandable_blockquote(&commit_check_message_detail(
-            repo, commit, settings, result
+        details = markdown::expandable_blockquote(&commit_check_message_additional(
+            commit, settings, result
         )),
     )
 }
@@ -46,8 +46,7 @@ pub fn commit_check_message_summary(
     )
 }
 
-pub fn commit_check_message_detail(
-    repo: &str,
+pub fn commit_check_message_additional(
     commit: &str,
     settings: &CommitSettings,
     result: &CommitCheckResult,
@@ -63,24 +62,14 @@ pub fn commit_check_message_detail(
         )
     };
     format!(
-        "{repo}/`{commit}`{url}{notify}
-
-*new* branches containing this commit:
-{new}
+        "`{commit}`{notify}
 
 *all* branches containing this commit:
 {all}
 {auto_remove_msg}
 ",
-        repo = markdown::escape(repo),
         commit = markdown::escape(commit),
-        url = settings
-            .url
-            .as_ref()
-            .map(|u| format!("\n{}", markdown::escape(u.as_str())))
-            .unwrap_or_default(),
-        notify = empty_or_start_new_line(&settings.notify.notify_markdown()),
-        new = markdown_list(result.new.iter()),
+        notify = empty_or_start_new_line(&settings.notify.subscribers_markdown()),
         all = markdown_list(result.all.iter())
     )
 }
@@ -102,7 +91,7 @@ pub async fn pr_issue_merged_message(
     Ok(format!(
         "{pretty_id} merged as `{commit}`{notify}",
         pretty_id = pr_issue_id_pretty(resources, id).await?,
-        notify = empty_or_start_new_line(&settings.notify.notify_markdown()),
+        notify = empty_or_start_new_line(&settings.notify.subscribers_markdown()),
     ))
 }
 
@@ -114,7 +103,7 @@ pub async fn pr_issue_closed_message(
     Ok(format!(
         "{pretty_id} has been closed{notify}",
         pretty_id = pr_issue_id_pretty(resources, id).await?,
-        notify = empty_or_start_new_line(&settings.notify.notify_markdown()),
+        notify = empty_or_start_new_line(&settings.notify.subscribers_markdown()),
     ))
 }
 
@@ -144,7 +133,7 @@ pub fn branch_check_message(
 ",
         repo = markdown::escape(repo),
         branch = markdown::escape(branch),
-        notify = empty_or_start_new_line(&settings.notify.notify_markdown()),
+        notify = empty_or_start_new_line(&settings.notify.subscribers_markdown()),
     )
 }
 

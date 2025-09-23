@@ -45,13 +45,8 @@ pub struct NotifySettings {
 }
 
 impl NotifySettings {
-    pub fn notify_markdown(&self) -> String {
+    pub fn subscribers_markdown(&self) -> String {
         let mut result = String::new();
-        let comment = self.comment.trim();
-        if !comment.is_empty() {
-            result.push_str("*comment*:\n");
-            result.push_str(&markdown::escape(self.comment.trim()));
-        }
         if !self.subscribers.is_empty() {
             if !result.is_empty() {
                 result.push_str("\n\n");
