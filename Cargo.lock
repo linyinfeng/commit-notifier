@@ -284,7 +284,6 @@ dependencies = [
  "pretty_env_logger",
  "regex",
  "rusqlite",
- "scopeguard",
  "serde",
  "serde_json",
  "serde_regex",
