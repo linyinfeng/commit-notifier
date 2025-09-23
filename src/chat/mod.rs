@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, fmt, sync::Arc};
 
-use git2::BranchType;
+use git2::{BranchType, Oid};
 use octocrab::models::IssueState;
 use teloxide::types::{ChatId, Message};
 use tokio::{fs::read_dir, sync::Mutex};
@@ -146,6 +146,10 @@ pub async fn commit_check(
     hash: &str,
 ) -> Result<CommitCheckResult, Error> {
     log::info!("checking commit ({task}, {hash})", task = resources.task);
+    if let Err(e) = commit_pre_check(repo_resources, hash).await {
+        commit_remove(resources, hash).await?;
+        return Err(e);
+    }
     let cache = repo_resources.cache().await?;
     let all_branches = {
         let commit = hash.to_string();
@@ -199,6 +203,13 @@ pub async fn commit_check(
     resources.save_settings().await?;
     resources.save_results().await?;
     Ok(check_result)
+}
+
+pub async fn commit_pre_check(repo_resources: &RepoResources, hash: &str) -> Result<(), Error> {
+    let repo = repo_resources.repo.lock().await;
+    let id = Oid::from_str(hash)?;
+    let _commit = repo.find_commit(id)?;
+    Ok(())
 }
 
 pub async fn pr_issue_add(
