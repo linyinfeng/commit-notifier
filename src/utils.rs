@@ -84,6 +84,19 @@ where
     Ok(serde_json::from_reader(reader)?)
 }
 
+pub fn read_json_strict<P, T>(path: P) -> Result<T, Error>
+where
+    P: AsRef<Path> + fmt::Debug,
+    T: Serialize + DeserializeOwned,
+{
+    log::debug!("read from file: {path:?}");
+    let file = File::open(path)?;
+    // TODO lock_shared maybe added to the std lib in the future
+    FileExt::lock_shared(&file)?; // close of file automatically release the lock
+    let reader = BufReader::new(file);
+    Ok(serde_json::from_reader(reader)?)
+}
+
 pub fn write_json<P, T>(path: P, rs: &T) -> Result<(), Error>
 where
     P: AsRef<Path> + fmt::Debug,

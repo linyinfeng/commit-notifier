@@ -17,6 +17,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use chrono::Utc;
+use clap::crate_version;
 use cron::Schedule;
 use error::Error;
 use github::GitHubInfo;
@@ -36,6 +37,7 @@ use teloxide::types::ParseMode;
 use teloxide::update_listeners;
 use teloxide::utils::command::BotCommands;
 use teloxide::utils::markdown;
+use tokio::fs::read_dir;
 use tokio::time::sleep;
 use url::Url;
 
@@ -56,10 +58,12 @@ use crate::repo::pr_issue_url;
 use crate::repo::settings::ConditionSettings;
 use crate::update::update_and_report_error;
 use crate::utils::modify_subscriber_set;
+use crate::utils::read_json_strict;
 use crate::utils::reply_to_msg;
 use crate::utils::report_command_error;
 use crate::utils::report_error;
 use crate::utils::resolve_repo_or_url_and_id;
+use crate::utils::write_json;
 
 #[derive(BotCommands, Clone, Debug)]
 #[command(rename_rule = "lowercase", description = "Supported commands:")]
@@ -78,6 +82,11 @@ async fn run() {
 
     options::initialize();
     log::info!("config = {:?}", options::get());
+
+    if let Err(e) = version_check().await {
+        log::error!("error: {e}");
+        std::process::exit(1);
+    }
 
     octocrab_initialize();
 
@@ -110,6 +119,63 @@ async fn run() {
         log::error!("failed to clear resources map for repositories: {e}");
     }
     log::info!("exit");
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VersionInfo {
+    version: String,
+}
+
+async fn version_check() -> Result<(), Error> {
+    let options = options::get();
+    let working_dir = &options.working_dir;
+    let version_json_path = working_dir.join("version.json");
+    let version_info = VersionInfo {
+        version: crate_version!().to_string(),
+    };
+    log::debug!(
+        "version checking, read working directory: {:?}",
+        working_dir
+    );
+    let mut dir = read_dir(working_dir).await?;
+    let mut version_info_found = false;
+    let mut non_empty = false;
+    while let Some(entry) = dir.next_entry().await? {
+        non_empty = true;
+        let file_name = entry.file_name();
+        if file_name == "version.json" {
+            version_info_found = true;
+        }
+    }
+    if non_empty && !version_info_found {
+        log::error!("working directory is non-empty, but no version information can be found ");
+        log::error!(
+            "if you are upgrading from version `0.1.x`, please follow <https://github.com/linyinfeng/commit-notifier?tab=readme-ov-file#migration-guide> for manual migration"
+        );
+        return Err(Error::NeedsManualMigration);
+    } else if non_empty {
+        // get version information
+        let old_version_info: VersionInfo = read_json_strict(&version_json_path)?;
+        let old_version = version_compare::Version::from(&old_version_info.version)
+            .ok_or_else(|| Error::InvalidVersion(old_version_info.version.clone()))?;
+        let new_version = version_compare::Version::from(&version_info.version)
+            .ok_or_else(|| Error::InvalidVersion(old_version_info.version.clone()))?;
+        if old_version > new_version {
+            return Err(Error::VersionDowngrading(
+                old_version_info.version,
+                version_info.version,
+            ));
+        }
+    } else {
+        // do nothing, start from an empty configuration
+    }
+    log::debug!(
+        "save version information to {:?}: {:?}",
+        version_json_path,
+        version_info
+    );
+    write_json(version_json_path, &version_info)?;
+    Ok(())
 }
 
 async fn answer(bot: Bot, msg: Message, bc: BCommand) -> ResponseResult<()> {

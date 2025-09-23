@@ -9,6 +9,12 @@ use crate::github::GitHubInfo;
 
 #[derive(Error, Debug)]
 pub enum Error {
+    #[error("needs manual migration")]
+    NeedsManualMigration,
+    #[error("invalid version: {0}")]
+    InvalidVersion(String),
+    #[error("downgrading from version {0} to {1}")]
+    VersionDowngrading(String, String),
     #[error("unknown resource: {0}")]
     UnknownResource(String),
     #[error("unclosed quote")]
