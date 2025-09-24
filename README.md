@@ -155,8 +155,8 @@ There are several differences between `0.1.x` and `0.2.x`.
          "master-to-staging": {
            "condition": {
              "SuppressFromTo": {
-               "from_regex": "main",
-               "to_regex": "staging(-next)?"
+               "from_regex": "^master$",
+               "to_regex": "^staging(-next)?$"
              }
            }
          }
