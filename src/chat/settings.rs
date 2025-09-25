@@ -88,7 +88,7 @@ impl TryFrom<SubscriberCompat> for Subscriber {
                     markdown_mention: mention.clone(),
                 }),
                 (_, Some(username)) => Ok(Subscriber::Telegram {
-                    markdown_mention: format!("@{username}"),
+                    markdown_mention: format!("@{}", markdown::escape(username)),
                 }),
                 (_, _) => Err(Error::InvalidSubscriber(compat)),
             },
@@ -105,9 +105,14 @@ pub enum SubscriberCompat {
 }
 
 impl Subscriber {
-    pub fn from_tg_user(u: &User) -> Self {
+    pub fn from_tg_user(user: &User) -> Self {
+        // `markdown::user_mention_or_link` does not escape `user.mention()`
+        let mention = match user.mention() {
+            Some(mention) => markdown::escape(&mention),
+            None => markdown::link(user.url().as_str(), &markdown::escape(&user.full_name())),
+        };
         Self::Telegram {
-            markdown_mention: markdown::user_mention_or_link(u),
+            markdown_mention: mention,
         }
     }
 
