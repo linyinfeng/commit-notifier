@@ -70,8 +70,10 @@ use crate::utils::write_json;
 #[derive(BotCommands, Clone, Debug)]
 #[command(rename_rule = "lowercase", description = "Supported commands:")]
 enum BCommand {
-    #[command(description = "main and the only command.")]
+    #[command(description = "main command.")]
     Notifier(String),
+    #[command(description = "shortcut for/notifier pr-add/issue-add.")]
+    Add(String),
 }
 
 #[tokio::main]
@@ -186,8 +188,11 @@ async fn version_check() -> Result<(), Error> {
 async fn answer(bot: Bot, msg: Message, bc: BCommand) -> ResponseResult<()> {
     log::trace!("message: {msg:?}");
     log::trace!("bot command: {bc:?}");
-    let BCommand::Notifier(input) = bc;
-    let result = match command::parse(input) {
+    let cmd_str = match bc {
+        BCommand::Notifier(input) => input,
+        BCommand::Add(input) => format!("pr-add {input}"),
+    };
+    let result = match command::parse(cmd_str) {
         Ok(command) => {
             log::debug!("command: {command:?}");
             let (bot, msg) = (bot.clone(), msg.clone());
