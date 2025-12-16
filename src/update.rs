@@ -218,10 +218,20 @@ async fn update_chat_repo_branch(
     let result = chat::branch_check(resources, repo_resources, branch).await?;
     log::info!("finished branch check ({chat}, {repo}, {branch})");
     if result.new != result.old {
-        let message = branch_check_message(repo, branch, settings, &result);
+        let message = {
+            let repo_settings = repo_resources.settings.read().await;
+            branch_check_message(
+                repo,
+                branch,
+                settings,
+                &result,
+                repo_settings.github_info.as_ref(),
+            )
+        };
         let mut send = bot
             .send_message(chat, message)
-            .parse_mode(ParseMode::MarkdownV2);
+            .parse_mode(ParseMode::MarkdownV2)
+            .disable_link_preview(true);
         send = try_attach_subscribe_button_markup(chat, send, "b", repo, branch);
         send.await?;
     }

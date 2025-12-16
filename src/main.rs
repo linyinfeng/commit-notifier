@@ -990,7 +990,16 @@ async fn branch_check(
             .clone()
     };
     let result = chat::branch_check(&resources, &repo_resources, &branch).await?;
-    let reply = branch_check_message(&repo, &branch, &branch_settings, &result);
+    let reply = {
+        let settings = repo_resources.settings.read().await;
+        branch_check_message(
+            &repo,
+            &branch,
+            &branch_settings,
+            &result,
+            settings.github_info.as_ref(),
+        )
+    };
 
     let mut send = reply_to_msg(&bot, &msg, reply).parse_mode(ParseMode::MarkdownV2);
     send = try_attach_subscribe_button_markup(msg.chat.id, send, "b", &repo, &branch);

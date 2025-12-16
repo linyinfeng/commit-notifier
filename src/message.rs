@@ -9,6 +9,7 @@ use crate::{
     },
     condition::Action,
     error::Error,
+    github::GitHubInfo,
     repo::{pr_issue_url, resources::RepoResources},
     utils::empty_or_start_new_line,
 };
@@ -118,19 +119,22 @@ pub fn branch_check_message(
     branch: &str,
     settings: &BranchSettings,
     result: &BranchCheckResult,
+    github_info: Option<&GitHubInfo>,
 ) -> String {
     let status = if result.old == result.new {
         format!(
             "{}
 \\(not changed\\)",
-            markdown_optional_commit(result.new.as_deref())
+            markdown_optional_commit(result.new.as_deref(), github_info)
         )
+    } else if let (Some(info), Some(old), Some(new)) = (github_info, &result.old, &result.new) {
+        github_commit_diff(info, old, new)
     } else {
         format!(
             "{old} \u{2192}
 {new}",
-            old = markdown_optional_commit(result.old.as_deref()),
-            new = markdown_optional_commit(result.new.as_deref()),
+            old = markdown_optional_commit(result.old.as_deref(), github_info),
+            new = markdown_optional_commit(result.new.as_deref(), github_info),
         )
     };
     format!(
@@ -143,10 +147,33 @@ pub fn branch_check_message(
     )
 }
 
-pub fn markdown_optional_commit(commit: Option<&str>) -> String {
+const SHORT_COMMIT_LENGTH: usize = 11;
+
+pub fn short_commit(commit: &str) -> &str {
+    &commit[..SHORT_COMMIT_LENGTH.min(commit.len())]
+}
+
+pub fn github_commit_diff(github_info: &GitHubInfo, old: &str, new: &str) -> String {
+    let GitHubInfo { owner, repo, .. } = github_info;
+    let old_short = short_commit(old);
+    let new_short = short_commit(new);
+    let url = format!("https://github.com/{owner}/{repo}/compare/{old}...{new}");
+    let text = format!("{old_short}...{new_short}");
+    markdown::link(&url, &markdown::escape(&text))
+}
+
+pub fn markdown_optional_commit(commit: Option<&str>, github_info: Option<&GitHubInfo>) -> String {
     match &commit {
         None => "\\(nothing\\)".to_owned(),
-        Some(c) => markdown::code_inline(&markdown::escape(c)),
+        Some(commit) => match github_info {
+            Some(info) => {
+                let GitHubInfo { owner, repo, .. } = info;
+                let short = short_commit(commit);
+                let url = format!("https://github.com/{owner}/{repo}/commit/{short}");
+                markdown::link(&url, &markdown::escape(short))
+            }
+            None => markdown::code_inline(&markdown::escape(commit)),
+        },
     }
 }
 
