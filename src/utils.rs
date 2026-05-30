@@ -5,7 +5,6 @@ use std::io::{BufReader, BufWriter};
 use std::path::Path;
 use std::sync::LazyLock;
 
-use fs4::fs_std::FileExt;
 use regex::Regex;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -78,8 +77,7 @@ where
     }
     log::debug!("read from file: {path:?}");
     let file = File::open(path)?;
-    // TODO lock_shared maybe added to the std lib in the future
-    FileExt::lock_shared(&file)?; // close of file automatically release the lock
+    file.lock_shared()?; // close of file automatically release the lock
     let reader = BufReader::new(file);
     Ok(serde_json::from_reader(reader)?)
 }
@@ -91,8 +89,7 @@ where
 {
     log::debug!("read from file: {path:?}");
     let file = File::open(path)?;
-    // TODO lock_shared maybe added to the std lib in the future
-    FileExt::lock_shared(&file)?; // close of file automatically release the lock
+    file.lock_shared()?;
     let reader = BufReader::new(file);
     Ok(serde_json::from_reader(reader)?)
 }
@@ -108,8 +105,8 @@ where
         .create(true)
         .truncate(true)
         .open(path)?;
-    file.lock_exclusive()?;
-    let writer = BufWriter::new(file);
+    file.lock()?;
+    let writer: BufWriter<File> = BufWriter::new(file);
     Ok(serde_json::to_writer_pretty(writer, rs)?)
 }
 

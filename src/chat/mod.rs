@@ -301,7 +301,7 @@ pub async fn merged_pr_to_commit(
         .ok_or(Error::NoMergeCommit { github_info, pr_id })?;
     let comment = format!(
         "{title}{comment}",
-        title = pr.title.as_deref().unwrap_or("untitled"),
+        title = pr.title,
         comment = empty_or_start_new_line(&settings.notify.comment),
     );
     let commit_settings = CommitSettings {
