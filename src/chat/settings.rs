@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use teloxide::{types::User, utils::markdown};
 use url::Url;
@@ -26,6 +27,7 @@ pub struct CommitSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PRIssueSettings {
     pub url: Url,
+    pub closed_at: Option<DateTime<Utc>>,
     #[serde(flatten)]
     pub notify: NotifySettings,
 }

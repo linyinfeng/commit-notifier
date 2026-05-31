@@ -1,4 +1,5 @@
 use clap::Parser;
+use humantime::Duration;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -10,6 +11,8 @@ pub struct Options {
     pub cron: String,
     #[arg(short, long)]
     pub admin_chat_id: i64,
+    #[arg(short, long, default_value = "1week")]
+    pub pr_issue_expire: Duration,
 }
 
 pub static OPTIONS: once_cell::sync::OnceCell<Options> = once_cell::sync::OnceCell::new();

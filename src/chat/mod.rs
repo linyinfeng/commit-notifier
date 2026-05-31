@@ -1,5 +1,6 @@
 use std::{collections::BTreeSet, fmt, sync::Arc};
 
+use chrono::Utc;
 use git2::{BranchType, Oid};
 use octocrab::models::IssueState;
 use teloxide::types::{ChatId, Message};
@@ -17,6 +18,7 @@ use crate::{
     condition::{Action, Condition},
     error::Error,
     github::{self, GitHubInfo},
+    options,
     repo::{cache::query_cache_commit, resources::RepoResources},
     utils::empty_or_start_new_line,
 };
@@ -275,18 +277,67 @@ pub async fn pr_issue_check(
         let commit = merged_pr_to_commit(resources, github_info, id, settings).await?;
         return Ok(PRIssueCheckResult::Merged(commit));
     }
-    if issue.state == IssueState::Closed {
-        {
+    match issue.state {
+        IssueState::Open => {
             let mut locked = resources.settings.write().await;
-            locked
+            let issue_settings = locked
                 .pr_issues
-                .remove(&id)
+                .get_mut(&id)
                 .ok_or(Error::UnknownPRIssue(id))?;
-        };
-        resources.save_settings().await?;
-        return Ok(PRIssueCheckResult::Closed);
+            match &issue_settings.closed_at {
+                Some(_) => {
+                    issue_settings.closed_at = None;
+                    drop(locked);
+                    resources.save_settings().await?;
+                    Ok(PRIssueCheckResult::Opened)
+                }
+                None => Ok(PRIssueCheckResult::Waiting),
+            }
+        }
+        IssueState::Closed => {
+            let mut locked = resources.settings.write().await;
+            let issue_settings = locked
+                .pr_issues
+                .get_mut(&id)
+                .ok_or(Error::UnknownPRIssue(id))?;
+            match issue_settings.closed_at {
+                None => {
+                    issue_settings.closed_at = Some(issue.closed_at.unwrap_or_else(Utc::now));
+                    drop(locked);
+                    resources.save_settings().await?;
+                    Ok(PRIssueCheckResult::Closed)
+                }
+                Some(closed_at) => {
+                    match (Utc::now() - closed_at).to_std() {
+                        Ok(duration) => {
+                            if duration >= *options::get().pr_issue_expire {
+                                // expired
+                                locked
+                                    .pr_issues
+                                    .remove(&id)
+                                    .ok_or(Error::UnknownPRIssue(id))?;
+                                drop(locked);
+                                resources.save_settings().await?;
+                                Ok(PRIssueCheckResult::Expired)
+                            } else {
+                                // not expired
+                                Ok(PRIssueCheckResult::Expiring)
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("failed to calculate elapsed time for pr/issue {id}: {e}");
+                            Ok(PRIssueCheckResult::Unknown)
+                        }
+                    }
+                }
+            }
+        }
+        // issue state is non-exhaustive
+        s => {
+            log::warn!("unknown issue state: {s:?}");
+            Ok(PRIssueCheckResult::Unknown)
+        }
     }
-    Ok(PRIssueCheckResult::Waiting)
 }
 
 pub async fn merged_pr_to_commit(
