@@ -45,6 +45,10 @@ pub struct BranchCheckResult {
 #[derive(Debug)]
 pub enum PRIssueCheckResult {
     Merged(String),
+    Opened,
     Closed,
     Waiting,
+    Expiring,
+    Expired,
+    Unknown,
 }

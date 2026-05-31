@@ -89,6 +89,18 @@ pub async fn pr_issue_id_pretty(resources: &RepoResources, id: u64) -> Result<St
     ))
 }
 
+pub async fn pr_issue_opened_message(
+    resources: &RepoResources,
+    id: u64,
+    settings: &PRIssueSettings,
+) -> Result<String, Error> {
+    Ok(format!(
+        "{pretty_id} has been opened{notify}",
+        pretty_id = pr_issue_id_pretty(resources, id).await?,
+        notify = empty_or_start_new_line(&settings.notify.subscribers_markdown()),
+    ))
+}
+
 pub async fn pr_issue_merged_message(
     resources: &RepoResources,
     id: u64,

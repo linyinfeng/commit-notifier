@@ -19,7 +19,7 @@ use crate::{
     condition::Action,
     message::{
         branch_check_message, commit_check_message, pr_issue_closed_message,
-        pr_issue_merged_message,
+        pr_issue_merged_message, pr_issue_opened_message,
     },
     options,
     repo::{self, resources::RepoResources},
@@ -162,6 +162,13 @@ async fn update_chat_repo_pr_issue(
                 .await?;
             Ok(())
         }
+        PRIssueCheckResult::Opened => {
+            let message = pr_issue_opened_message(repo_resources, id, settings).await?;
+            bot.send_message(chat, message)
+                .parse_mode(ParseMode::MarkdownV2)
+                .await?;
+            Ok(())
+        }
         PRIssueCheckResult::Closed => {
             let message = pr_issue_closed_message(repo_resources, id, settings).await?;
             bot.send_message(chat, message)
@@ -170,6 +177,15 @@ async fn update_chat_repo_pr_issue(
             Ok(())
         }
         PRIssueCheckResult::Waiting => Ok(()),
+        PRIssueCheckResult::Expiring => Ok(()),
+        PRIssueCheckResult::Expired => {
+            log::info!("stopped tracking to pr/issue {id}");
+            Ok(())
+        }
+        PRIssueCheckResult::Unknown => {
+            log::warn!("issue {id} state unknown");
+            Ok(())
+        }
     }
 }
 

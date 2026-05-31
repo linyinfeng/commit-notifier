@@ -815,6 +815,7 @@ async fn pr_issue_add(
     let comment = optional_comment.unwrap_or_default();
     let settings = PRIssueSettings {
         url,
+        closed_at: None,
         notify: NotifySettings {
             comment,
             subscribers,
@@ -848,13 +849,15 @@ async fn pr_issue_check(bot: Bot, msg: Message, repo: String, id: u64) -> Result
             match result {
                 PRIssueCheckResult::Merged(commit) => commit_check(bot, msg, repo, commit).await,
                 PRIssueCheckResult::Closed => {
-                    reply_to_msg(
-                        &bot,
-                        &msg,
-                        format!("{pretty_id} has been closed \\(and removed\\)"),
-                    )
-                    .parse_mode(ParseMode::MarkdownV2)
-                    .await?;
+                    reply_to_msg(&bot, &msg, format!("{pretty_id} has been closed"))
+                        .parse_mode(ParseMode::MarkdownV2)
+                        .await?;
+                    Ok(())
+                }
+                PRIssueCheckResult::Opened => {
+                    reply_to_msg(&bot, &msg, format!("{pretty_id} has been opened"))
+                        .parse_mode(ParseMode::MarkdownV2)
+                        .await?;
                     Ok(())
                 }
                 PRIssueCheckResult::Waiting => {
@@ -872,6 +875,27 @@ async fn pr_issue_check(bot: Bot, msg: Message, repo: String, id: u64) -> Result
                         &id.to_string(),
                     );
                     send.await?;
+                    Ok(())
+                }
+                PRIssueCheckResult::Expiring => {
+                    let mut send = reply_to_msg(&bot, &msg, format!("{pretty_id} has been closed"))
+                        .parse_mode(ParseMode::MarkdownV2);
+                    send = try_attach_subscribe_button_markup(
+                        msg.chat.id,
+                        send,
+                        "p",
+                        &repo,
+                        &id.to_string(),
+                    );
+                    send.await?;
+                    Ok(())
+                }
+                PRIssueCheckResult::Expired => {
+                    log::info!("stopped tracking to pr/issue {id}");
+                    Ok(())
+                }
+                PRIssueCheckResult::Unknown => {
+                    log::warn!("issue {id} state unknown");
                     Ok(())
                 }
             }
