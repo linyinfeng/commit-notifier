@@ -66,6 +66,17 @@ pub fn empty_or_start_new_line(s: &str) -> String {
     }
 }
 
+static TG_USER_ID_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"tg://user/\?id=(\d+)").unwrap());
+
+/// Extract the user id from a `tg://user/?id=...` markdown link, if present.
+pub fn tg_user_link_id(s: &str) -> Option<u64> {
+    TG_USER_ID_REGEX
+        .captures(s)
+        .and_then(|c| c.get(1))
+        .and_then(|m| m.as_str().parse().ok())
+}
+
 pub fn read_json<P, T>(path: P) -> Result<T, Error>
 where
     P: AsRef<Path> + fmt::Debug,

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use teloxide::{types::User, utils::markdown};
 use url::Url;
 
-use crate::error::Error;
+use crate::{error::Error, utils::tg_user_link_id};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ChatRepoSettings {
@@ -42,8 +42,26 @@ pub struct BranchSettings {
 pub struct NotifySettings {
     #[serde(default)]
     pub comment: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_subscribers")]
     pub subscribers: BTreeSet<Subscriber>,
+}
+
+/// Drop subscribers that can not be converted (legacy entries without a
+/// recoverable user id) instead of failing to load the whole settings file.
+fn deserialize_subscribers<'de, D>(de: D) -> Result<BTreeSet<Subscriber>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let mut subscribers = BTreeSet::new();
+    for compat in Vec::<SubscriberCompat>::deserialize(de)? {
+        match Subscriber::try_from(compat) {
+            Ok(subscriber) => {
+                subscribers.insert(subscriber);
+            }
+            Err(e) => log::warn!("drop subscriber: {e}"),
+        }
+    }
+    Ok(subscribers)
 }
 
 impl NotifySettings {
@@ -74,22 +92,55 @@ impl NotifySettings {
 #[derive(PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Serialize, Deserialize)]
 #[serde(try_from = "SubscriberCompat")]
 pub enum Subscriber {
-    Telegram { markdown_mention: String },
+    Telegram {
+        user_id: u64,
+        markdown_mention: String,
+    },
+}
+
+impl SubscriberCompat {
+    /// Resolve the telegram user id: the stored field, or recovered from a
+    /// `tg://user/?id=...` mention link (legacy format).
+    pub fn resolve_user_id(&self) -> Option<u64> {
+        match self {
+            // stored user id takes precedence
+            SubscriberCompat::Telegram {
+                user_id: Some(id), ..
+            } => Some(*id),
+            // legacy format: recover the id from the mention link
+            SubscriberCompat::Telegram {
+                user_id: None,
+                markdown_mention: Some(mention),
+                ..
+            } => tg_user_link_id(mention),
+            SubscriberCompat::Telegram {
+                user_id: None,
+                markdown_mention: None,
+                ..
+            } => None,
+        }
+    }
 }
 
 impl TryFrom<SubscriberCompat> for Subscriber {
     type Error = Error;
 
     fn try_from(compat: SubscriberCompat) -> Result<Self, Self::Error> {
+        let user_id = compat
+            .resolve_user_id()
+            .ok_or_else(|| Error::InvalidSubscriber(compat.clone()))?;
         match &compat {
             SubscriberCompat::Telegram {
                 markdown_mention,
                 username,
+                ..
             } => match (markdown_mention, username) {
                 (Some(mention), _) => Ok(Subscriber::Telegram {
+                    user_id,
                     markdown_mention: mention.clone(),
                 }),
                 (_, Some(username)) => Ok(Subscriber::Telegram {
+                    user_id,
                     markdown_mention: format!("@{}", markdown::escape(username)),
                 }),
                 (_, _) => Err(Error::InvalidSubscriber(compat)),
@@ -101,6 +152,7 @@ impl TryFrom<SubscriberCompat> for Subscriber {
 #[derive(PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Deserialize)]
 pub enum SubscriberCompat {
     Telegram {
+        user_id: Option<u64>,
         markdown_mention: Option<String>,
         username: Option<String>, // field for compatibility
     },
@@ -108,19 +160,59 @@ pub enum SubscriberCompat {
 
 impl Subscriber {
     pub fn from_tg_user(user: &User) -> Self {
-        // `markdown::user_mention_or_link` does not escape `user.mention()`
-        let mention = match user.mention() {
-            Some(mention) => markdown::escape(&mention),
-            None => markdown::link(user.url().as_str(), &markdown::escape(&user.full_name())),
-        };
         Self::Telegram {
-            markdown_mention: mention,
+            user_id: user.id.0,
+            markdown_mention: markdown::link(
+                user.url().as_str(),
+                &markdown::escape(&user.first_name),
+            ),
         }
     }
 
     pub fn markdown(&self) -> &str {
         match self {
-            Subscriber::Telegram { markdown_mention } => markdown_mention,
+            Subscriber::Telegram {
+                markdown_mention, ..
+            } => markdown_mention,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subscriber_compat() {
+        // legacy format without user_id: id recovered from the mention link
+        let s: Subscriber =
+            serde_json::from_str(r#"{"Telegram": {"markdown_mention": "[A](tg://user/?id=123)"}}"#)
+                .unwrap();
+        assert_eq!(
+            s,
+            Subscriber::Telegram {
+                user_id: 123,
+                markdown_mention: "[A](tg://user/?id=123)".to_string(),
+            }
+        );
+        // new format round-trips
+        let s: Subscriber =
+            serde_json::from_str(r#"{"Telegram": {"user_id": 123, "markdown_mention": "@alice"}}"#)
+                .unwrap();
+        assert_eq!(
+            serde_json::to_string(&s).unwrap(),
+            r#"{"Telegram":{"user_id":123,"markdown_mention":"@alice"}}"#
+        );
+    }
+
+    #[test]
+    fn unresolvable_subscriber_is_dropped() {
+        // legacy @username entry without user_id can not be resolved: dropped
+        // instead of failing the whole file
+        let s: NotifySettings = serde_json::from_str(
+            r#"{"subscribers": [{"Telegram": {"markdown_mention": "@alice"}}]}"#,
+        )
+        .unwrap();
+        assert!(s.subscribers.is_empty());
     }
 }

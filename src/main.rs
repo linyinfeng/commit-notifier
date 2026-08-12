@@ -4,7 +4,6 @@ mod condition;
 mod error;
 mod github;
 mod message;
-mod migration;
 mod options;
 mod repo;
 mod resources;
@@ -170,9 +169,7 @@ async fn version_check() -> Result<(), Error> {
                 version_info.version,
             ));
         }
-        if old_version == version_compare::Version::from("0.2.1").unwrap() {
-            migration::from_0_2_1().await?;
-        }
+        // TODO currently no migration
     } else {
         // do nothing, start from an empty configuration
     }
