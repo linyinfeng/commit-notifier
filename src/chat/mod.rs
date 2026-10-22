@@ -19,7 +19,7 @@ use crate::{
     error::Error,
     github::{self, GitHubInfo},
     options,
-    repo::{cache::query_cache_commit, resources::RepoResources},
+    repo::{cache::query_cache_commit, name, resources::RepoResources},
     utils::empty_or_start_new_line,
 };
 
@@ -67,12 +67,15 @@ pub async fn repos(chat: ChatId) -> Result<BTreeSet<String>, Error> {
         let mut results = BTreeSet::new();
         let mut dir = read_dir(&directory).await?;
         while let Some(entry) = dir.next_entry().await? {
-            results.insert(
-                entry
-                    .file_name()
-                    .into_string()
-                    .map_err(Error::InvalidOsString)?,
-            );
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(Error::InvalidOsString)?;
+            if name::validate(&name).is_err() {
+                log::warn!("ignoring invalid repository directory '{name}' in chat {chat}");
+                continue;
+            }
+            results.insert(name);
         }
         Ok(results)
     }

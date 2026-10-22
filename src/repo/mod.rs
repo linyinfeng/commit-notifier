@@ -25,12 +25,25 @@ use crate::{
 };
 
 pub mod cache;
+pub mod name;
 pub mod paths;
 pub mod resources;
 pub mod settings;
 
 pub async fn resources(repo: &str) -> Result<Arc<RepoResources>, Error> {
     resources::RESOURCES_MAP.get(&repo.to_string()).await
+}
+
+/// Validate a repository name and require it to be registered, without opening
+/// the repository. Callers that are about to create chat-side state use this to
+/// keep a typo from leaving an orphan directory behind.
+pub fn ensure_exists(name: &str) -> Result<(), Error> {
+    let paths = RepoPaths::new(name)?;
+    if paths.outer.is_dir() {
+        Ok(())
+    } else {
+        Err(Error::UnknownRepository(name.to_owned()))
+    }
 }
 
 pub async fn create(name: &str, url: &str) -> Result<Output, Error> {

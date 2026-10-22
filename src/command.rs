@@ -1,6 +1,7 @@
 use crate::condition;
 use crate::error::Error;
 use crate::github::GitHubInfo;
+use crate::repo;
 use clap::ColorChoice;
 use clap::Parser;
 use std::{ffi::OsString, iter};
@@ -30,9 +31,14 @@ pub enum Notifier {
     #[command(about = "return current chat id")]
     ChatId,
     #[command(about = "add a repository")]
-    RepoAdd { name: String, url: String },
+    RepoAdd {
+        #[arg(value_parser = repo::name::parse)]
+        name: String,
+        url: String,
+    },
     #[command(about = "edit settings of a repository")]
     RepoEdit {
+        #[arg(value_parser = repo::name::parse)]
         name: String,
         #[arg(long, short)]
         branch_regex: Option<String>,
@@ -42,20 +48,33 @@ pub enum Notifier {
         clear_github_info: bool,
     },
     #[command(about = "remove a repository")]
-    RepoRemove { name: String },
+    RepoRemove {
+        #[arg(value_parser = repo::name::parse)]
+        name: String,
+    },
     #[command(about = "add a commit")]
     CommitAdd {
+        #[arg(value_parser = repo::name::parse)]
         repo: String,
         hash: String,
         #[arg(long, short)]
         comment: String,
     },
     #[command(about = "remove a commit")]
-    CommitRemove { repo: String, hash: String },
+    CommitRemove {
+        #[arg(value_parser = repo::name::parse)]
+        repo: String,
+        hash: String,
+    },
     #[command(about = "fire a commit check immediately")]
-    CommitCheck { repo: String, hash: String },
+    CommitCheck {
+        #[arg(value_parser = repo::name::parse)]
+        repo: String,
+        hash: String,
+    },
     #[command(about = "subscribe to a commit")]
     CommitSubscribe {
+        #[arg(value_parser = repo::name::parse)]
         repo: String,
         hash: String,
         #[arg(short, long)]
@@ -89,13 +108,26 @@ pub enum Notifier {
         unsubscribe: bool,
     },
     #[command(about = "add a branch")]
-    BranchAdd { repo: String, branch: String },
+    BranchAdd {
+        #[arg(value_parser = repo::name::parse)]
+        repo: String,
+        branch: String,
+    },
     #[command(about = "remove a branch")]
-    BranchRemove { repo: String, branch: String },
+    BranchRemove {
+        #[arg(value_parser = repo::name::parse)]
+        repo: String,
+        branch: String,
+    },
     #[command(about = "fire a branch check immediately")]
-    BranchCheck { repo: String, branch: String },
+    BranchCheck {
+        #[arg(value_parser = repo::name::parse)]
+        repo: String,
+        branch: String,
+    },
     #[command(about = "subscribe to a branch")]
     BranchSubscribe {
+        #[arg(value_parser = repo::name::parse)]
         repo: String,
         branch: String,
         #[arg(short, long)]
@@ -103,6 +135,7 @@ pub enum Notifier {
     },
     #[command(about = "add an auto clean condition")]
     ConditionAdd {
+        #[arg(value_parser = repo::name::parse)]
         repo: String,
         identifier: String,
         #[arg(value_enum, short = 't', long = "type")]
@@ -111,7 +144,11 @@ pub enum Notifier {
         expression: String,
     },
     #[command(about = "remove an auto clean condition")]
-    ConditionRemove { repo: String, identifier: String },
+    ConditionRemove {
+        #[arg(value_parser = repo::name::parse)]
+        repo: String,
+        identifier: String,
+    },
     #[command(about = "list repositories and commits")]
     List,
 }
@@ -229,5 +266,19 @@ mod tests {
     fn verify_cli() {
         use clap::CommandFactory;
         Notifier::command().debug_assert()
+    }
+
+    #[test]
+    fn accepts_repository_name() {
+        assert!(parse("branch-add nixpkgs nixos-unstable".to_owned()).is_ok());
+    }
+
+    #[test]
+    fn rejects_url_as_repository_name() {
+        assert!(
+            parse("branch-add https://github.com/NixOS/nixpkgs nixos-unstable".to_owned()).is_err()
+        );
+        assert!(parse("branch-check https: nixos-unstable".to_owned()).is_err());
+        assert!(parse("repo-remove \"\"".to_owned()).is_err());
     }
 }

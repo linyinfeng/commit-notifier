@@ -5,7 +5,7 @@ use std::io::{BufReader, BufWriter};
 use std::path::Path;
 use std::sync::LazyLock;
 
-use regex::Regex;
+use regex::{Captures, Regex};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use teloxide::types::ReplyParameters;
@@ -147,34 +147,40 @@ pub async fn resolve_repo_or_url_and_id(
     static GITHUB_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r#"https://github\.com/([^/]+)/([^/]+)/(pull|issues)/(\d+)"#).unwrap()
     });
-    match pr_id {
-        Some(id) => Ok((repo_or_url, id)),
-        None => {
-            if let Some(captures) = GITHUB_URL_REGEX.captures(&repo_or_url) {
-                let owner = &captures[1];
-                let repo = &captures[2];
-                let github_info = GitHubInfo::new(owner.to_string(), repo.to_string());
-                log::trace!("PR/issue id to parse: {}", &captures[4]);
-                let id: u64 = captures[4].parse().map_err(Error::ParseInt)?;
-                let repos = repo::list().await?;
-                let mut repos_found = Vec::new();
-                for repo in repos {
-                    let resources = repo::resources(&repo).await?;
-                    let repo_github_info = &resources.settings.read().await.github_info;
-                    if repo_github_info.as_ref() == Some(&github_info) {
-                        repos_found.push(repo);
-                    }
-                }
-                if repos_found.is_empty() {
-                    return Err(Error::NoRepoHaveGitHubInfo(github_info));
-                } else if repos_found.len() != 1 {
-                    return Err(Error::MultipleReposHaveSameGitHubInfo(repos_found));
-                } else {
-                    let repo = repos_found.pop().unwrap();
-                    return Ok((repo, id));
-                }
-            }
-            Err(Error::UnsupportedPRIssueUrl(repo_or_url))
+
+    let captures = GITHUB_URL_REGEX.captures(&repo_or_url);
+    match (captures, pr_id) {
+        (Some(captures), explicit_id) => {
+            log::trace!("PR/issue id to parse: {}", &captures[4]);
+            let id = match explicit_id {
+                Some(id) => id,
+                None => captures[4].parse().map_err(Error::ParseInt)?,
+            };
+            Ok((repo_of_github_url(&captures).await?, id))
         }
+        // the id is given explicitly, so the first argument must be a plain
+        // repository name: an URL here would become a chat repository name
+        (None, Some(id)) => {
+            repo::name::validate(&repo_or_url)?;
+            Ok((repo_or_url, id))
+        }
+        (None, None) => Err(Error::UnsupportedPRIssueUrl(repo_or_url)),
+    }
+}
+
+async fn repo_of_github_url(captures: &Captures<'_>) -> Result<String, Error> {
+    let github_info = GitHubInfo::new(captures[1].to_owned(), captures[2].to_owned());
+    let mut repos_found = Vec::new();
+    for candidate in repo::list().await? {
+        let resources = repo::resources(&candidate).await?;
+        let repo_github_info = &resources.settings.read().await.github_info;
+        if repo_github_info.as_ref() == Some(&github_info) {
+            repos_found.push(candidate);
+        }
+    }
+    match repos_found.len() {
+        0 => Err(Error::NoRepoHaveGitHubInfo(github_info)),
+        1 => Ok(repos_found.pop().expect("length checked above")),
+        _ => Err(Error::MultipleReposHaveSameGitHubInfo(repos_found)),
     }
 }
