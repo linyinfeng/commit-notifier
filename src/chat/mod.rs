@@ -353,9 +353,11 @@ pub async fn merged_pr_to_commit(
     let commit = pr
         .merge_commit_sha
         .ok_or(Error::NoMergeCommit { github_info, pr_id })?;
+    // octocrab models a partial response: the title is absent when GitHub
+    // does not return it, and the comment just starts with the body then
     let comment = format!(
         "{title}{comment}",
-        title = pr.title,
+        title = pr.title.as_deref().unwrap_or_default(),
         comment = empty_or_start_new_line(&settings.notify.comment),
     );
     let commit_settings = CommitSettings {
