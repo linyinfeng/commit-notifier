@@ -1,0 +1,20 @@
+# Nothing is queued automatically: a maintainer ticks the box on Mergify's
+# comment (or comments `@mergifyio queue`) and the queue lands it once the
+# checks below are green.
+queue_rules:
+  - name: default
+    # Re-checked at the front of the queue, so a green run from before a rebase
+    # does not count. Any failing check blocks the merge; `check-success` is what
+    # keeps an empty check list from counting as green.
+    merge_conditions:
+      - "#check-failure = 0"
+      - check-success = check
+    # Linear history
+    merge_method: rebase
+    update_method: rebase
+
+# Already the default for `queue`: only maintainers can add to the queue.
+commands_restrictions:
+  queue:
+    conditions:
+      - sender-permission >= write
