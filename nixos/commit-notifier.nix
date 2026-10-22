@@ -55,6 +55,25 @@ in {
         RUST_LOG environment variable;
       '';
     };
+    maintenance = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Whether to consolidate the git packfiles of the tracked repositories.
+          Every fetch of new objects writes another packfile, and nothing else
+          consolidates them, so the number of packfiles would otherwise grow
+          without bound and slow every fetch down.
+        '';
+      };
+      calendar = lib.mkOption {
+        type = lib.types.str;
+        default = "daily";
+        description = ''
+          When to consolidate the git packfiles of the tracked repositories.
+        '';
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -97,5 +116,39 @@ in {
       group = "commit-notifier";
     };
     users.groups.commit-notifier = {};
+
+    systemd.services.commit-notifier-maintenance = lib.mkIf cfg.maintenance.enable {
+      description = "Consolidate git packfiles of commit-notifier repositories";
+
+      script = ''
+        shopt -s nullglob
+        for repo in /var/lib/commit-notifier/repositories/*/repo; do
+          echo "repacking $repo"
+          git -C "$repo" repack --geometric=2 -d --write-midx -q
+        done
+      '';
+
+      path = [
+        pkgs.git
+      ];
+
+      serviceConfig = {
+        User = "commit-notifier";
+        Group = "commit-notifier";
+        StateDirectory = "commit-notifier";
+        Type = "oneshot";
+        Nice = 10;
+        IOSchedulingClass = "idle";
+      };
+    };
+
+    systemd.timers.commit-notifier-maintenance = lib.mkIf cfg.maintenance.enable {
+      wantedBy = ["timers.target"];
+      timerConfig = {
+        OnCalendar = cfg.maintenance.calendar;
+        Persistent = true;
+        RandomizedDelaySec = "1h";
+      };
+    };
   };
 }
