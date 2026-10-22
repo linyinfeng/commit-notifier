@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::LazyLock};
 
 use teloxide::types::ChatId;
 
-use crate::{chat::Task, error::Error, options};
+use crate::{chat::Task, error::Error, options, repo};
 
 #[derive(Debug, Clone)]
 pub struct ChatRepoPaths {
@@ -21,6 +21,9 @@ impl ChatRepoPaths {
         if !chat_path.is_dir() {
             return Err(Error::NotInAllowList(task.chat));
         }
+        // opening these paths creates `chats/<chat>/<repo>`, so a repository
+        // that is invalid or not registered must not get that far
+        repo::ensure_exists(&task.repo)?;
         let repo = chat_path.join(&task.repo);
         Ok(Self {
             // chat: chat_path,
