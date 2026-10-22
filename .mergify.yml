@@ -3,17 +3,15 @@
 # checks below are green.
 queue_rules:
   - name: default
-    queue_conditions:
-      - base = main
-      - -draft
     # Re-checked at the front of the queue, so a green run from before a rebase
-    # does not count.
+    # does not count. Any failing check blocks the merge; `check-success` is what
+    # keeps an empty check list from counting as green.
     merge_conditions:
+      - "#check-failure = 0"
       - check-success = check
     # Linear history
     merge_method: rebase
     update_method: rebase
-    batch_size: 1
 
 # Already the default for `queue`: only maintainers can add to the queue.
 commands_restrictions:
