@@ -282,10 +282,8 @@ async fn sweep_subscribers(
         let Subscriber::Telegram { user_id, .. } = &subscriber;
         let member = match bot.get_chat_member(chat, UserId(*user_id)).await {
             Ok(member) => member,
-            // account deleted on Telegram: get_chat_member reports user not
-            // found instead of a member status, so remove it
-            Err(RequestError::Api(ApiError::UserNotFound)) => {
-                log::info!("remove subscriber {subscriber:?} from chat {chat}: user not found");
+            Err(e) if subscriber_unresolvable(&e) => {
+                log::info!("remove subscriber {subscriber:?} from chat {chat}: {e}");
                 invalid.insert(subscriber);
                 continue;
             }
@@ -323,6 +321,26 @@ async fn sweep_subscribers(
     }
     resources.save_settings().await?;
     Ok(())
+}
+
+/// Whether `get_chat_member` cannot resolve the subscriber as a participant of
+/// the chat at all:
+///
+/// - `user not found` for an id Telegram no longer knows, and
+/// - `PARTICIPANT_ID_INVALID`, documented as "the specified participant ID is
+///   invalid" for `channels.getParticipant`, the method behind `getChatMember`.
+///   teloxide has no variant for it, so it arrives as `Unknown`, and it does not
+///   prove the account is gone: it is also reported for ids the bot cannot
+///   resolve at all (tdlib/telegram-bot-api#802).
+///
+/// Either way the id cannot be mentioned in the chat, so keeping the
+/// subscription changes nothing; drop it instead of retrying on every update.
+fn subscriber_unresolvable(e: &RequestError) -> bool {
+    match e {
+        RequestError::Api(ApiError::UserNotFound) => true,
+        RequestError::Api(ApiError::Unknown(text)) => text.contains("PARTICIPANT_ID_INVALID"),
+        _ => false,
+    }
 }
 
 /// Remove invalid subscribers and replace renamed ones (mention changed).
